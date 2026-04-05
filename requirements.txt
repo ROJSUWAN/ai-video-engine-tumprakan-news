@@ -1,0 +1,12 @@
+flask
+requests
+moviepy==1.0.3
+numpy<2.0.0
+pillow<10.0.0
+huggingface_hub
+duckduckgo_search
+edge_tts
+gtts
+nest_asyncio
+google-cloud-storage
+pythainlp
