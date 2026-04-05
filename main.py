@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Tamprakan (Normal Speed + New Bucket)
+# ✅ Mode: News Tamprakan (Normal Speed + New Bucket) - FIXED VERSION
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที
@@ -38,7 +38,7 @@ app = Flask(__name__)
 # 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed"
 
-# ⚙️ Google Cloud Storage Config (ปรับเป็นชื่อ Bucket ใหม่ของคุณ)
+# ⚙️ Google Cloud Storage Config
 BUCKET_NAME = "n8n-video-tamprakan-news" 
 KEY_FILE_PATH = "gcs_key.json"
 
@@ -64,7 +64,6 @@ def upload_to_gcs(source_file_name):
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_filename(source_file_name, timeout=300)
-        # สร้าง Signed URL สำหรับให้ n8n/คนภายนอก เข้าดูได้ (12 ชม.)
         url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12), method="GET")
         print(f"✅ Upload Success: {url}")
         return url
@@ -119,7 +118,7 @@ def download_image_from_url(url, filename):
     return False
 
 def search_real_image(query, filename):
-    if not query or "SELECT" in query or "INSERT" in query or "GALLERY" in query or len(query) < 3:
+    if not query or any(x in query.upper() for x in ["SELECT", "INSERT", "GALLERY"]) or len(query) < 3:
         return False
     try:
         with DDGS() as ddgs:
@@ -132,13 +131,11 @@ def search_real_image(query, filename):
 # 🔤 Font & Text Utilities
 # ---------------------------------------------------------
 def get_font(fontsize):
-    # ปรับลำดับ: ใช้ Tahoma ก่อน (เพราะเห็นในเครื่องคุณมี), ถ้าไม่มีใช้ Sarabun
     font_options = ["tahomabd.ttf", "tahoma.ttf", "Sarabun-Bold.ttf"]
     for font_p in font_options:
         if os.path.exists(font_p):
             return ImageFont.truetype(font_p, fontsize)
     
-    # ถ้าหาไม่เจอจริงๆ ให้โหลด Sarabun อัตโนมัติ
     FONT_URL = "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf"
     try:
         r = requests.get(FONT_URL, timeout=15)
@@ -191,7 +188,6 @@ def create_text_clip(text_chunk, size=(720, 1280)):
 # ---------------------------------------------------------
 async def create_voice_safe(text, filename):
     try:
-        # ✅ ปรับ rate เป็น +0% เพื่อความเร็วปกติ
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+0%")
         await communicate.save(filename)
     except:
@@ -219,11 +215,12 @@ def create_ads_clip(duration):
 # 🎞️ Main Process
 # ---------------------------------------------------------
 def process_video_background(task_id, scenes, topic):
+    # ตรวจสอบประเภทข้อมูล task_id ให้เป็น string เสมอ
+    task_id = str(task_id)
     print(f"[{task_id}] 🎬 Starting Process (Normal Speed)...")
     output_filename = f"video_{task_id}.mp4"
     master_image_path = f"master_{task_id}.jpg"
     
-    # ดึงรูปหลักจาก Topic
     if not search_real_image(topic, master_image_path):
         Image.new('RGB', (720, 1280), (20,20,20)).save(master_image_path)
 
@@ -235,23 +232,25 @@ def process_video_background(task_id, scenes, topic):
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
 
-            # จัดการรูปภาพในแต่ละ Scene
             prompt = scene.get('image_url') or ""
             if prompt.startswith("http"):
                 download_image_from_url(prompt, img_file)
             else:
                 shutil.copy(master_image_path, img_file)
 
-            # สร้างเสียงพูด (Normal Speed)
             script_text = scene.get('script') or "ไม่มีเนื้อหาข่าว"
-            asyncio.run(create_voice_safe(script_text, audio_file))
+            
+            # ✅ ปรับปรุงระบบ Async Loop สำหรับ Thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(create_voice_safe(script_text, audio_file))
+            loop.close()
 
             if os.path.exists(audio_file) and os.path.exists(img_file):
                 audio = AudioFileClip(audio_file)
                 dur = audio.duration
                 img_clip = ImageClip(img_file).set_duration(dur)
                 
-                # ทำ Subtitles
                 chunks = wrap_and_chunk_thai_text(script_text)
                 total_chars = max(sum(len(c) for c in chunks), 1)
                 sub_clips = []
@@ -286,11 +285,12 @@ def process_video_background(task_id, scenes, topic):
             final.close()
             for c in clips: c.close()
 
-    except Exception as e: print(f"❌ Error: {e}")
+    except Exception as e: 
+        print(f"❌ Error in process_video_background: {e}")
     finally:
-        # ล้างไฟล์ขยะ
+        # ✅ ล้างไฟล์ขยะโดยบังคับ task_id เป็น string
         for f in os.listdir():
-            if task_id in f:
+            if str(task_id) in f:
                 try: os.remove(f)
                 except: pass
 
@@ -298,9 +298,12 @@ def process_video_background(task_id, scenes, topic):
 def api_create_video():
     data = request.json
     scenes = data.get('scenes', [])
-    task_id = data.get('task_id') or str(uuid.uuid4())
+    # ✅ ป้องกัน TypeError: บังคับ task_id จาก n8n ให้เป็น string ทันที
+    task_id = str(data.get('task_id') or uuid.uuid4())
     topic = data.get('topic') or ""
+    
     if not scenes: return jsonify({"error": "No scenes"}), 400
+    
     threading.Thread(target=process_video_background, args=(task_id, scenes, topic)).start()
     return jsonify({"status": "processing", "task_id": task_id}), 202
 
