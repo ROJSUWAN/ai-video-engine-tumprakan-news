@@ -1,5 +1,5 @@
 # ---------------------------------------------------------
-# ✅ Mode: News Brief Pro (Final Fix: pythainlp + Duration + Ads Space)
+# ✅ Mode: News Tamprakan (Normal Speed + New Bucket)
 # ---------------------------------------------------------
 import sys
 # บังคับให้ Python พ่น Log ออกมาทันที
@@ -38,11 +38,8 @@ app = Flask(__name__)
 # 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed"
 
-# Environment Variables
-HF_TOKEN = os.environ.get("HF_TOKEN")
-
-# ⚙️ Google Cloud Storage Config
-BUCKET_NAME = "n8n-video-storage-0123"
+# ⚙️ Google Cloud Storage Config (ปรับเป็นชื่อ Bucket ใหม่ของคุณ)
+BUCKET_NAME = "n8n-video-tamprakan-news" 
 KEY_FILE_PATH = "gcs_key.json"
 
 # ---------------------------------------------------------
@@ -67,6 +64,7 @@ def upload_to_gcs(source_file_name):
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(destination_blob_name)
         blob.upload_from_filename(source_file_name, timeout=300)
+        # สร้าง Signed URL สำหรับให้ n8n/คนภายนอก เข้าดูได้ (12 ชม.)
         url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12), method="GET")
         print(f"✅ Upload Success: {url}")
         return url
@@ -123,8 +121,6 @@ def download_image_from_url(url, filename):
 def search_real_image(query, filename):
     if not query or "SELECT" in query or "INSERT" in query or "GALLERY" in query or len(query) < 3:
         return False
-        
-    print(f"🌍 Searching: {query[:30]}...")
     try:
         with DDGS() as ddgs:
             results = list(ddgs.images(query, max_results=1))
@@ -135,21 +131,20 @@ def search_real_image(query, filename):
 # ---------------------------------------------------------
 # 🔤 Font & Text Utilities
 # ---------------------------------------------------------
-FONT_PATH = "Sarabun-Bold.ttf"
-FONT_URL = "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf"
-
 def get_font(fontsize):
-    if not os.path.exists(FONT_PATH):
-        print("📥 Downloading Sarabun-Bold.ttf...", flush=True)
-        try:
-            r = requests.get(FONT_URL, allow_redirects=True, timeout=15)
-            with open(FONT_PATH, 'wb') as f: f.write(r.content)
-        except Exception as e:
-            print(f"❌ Font download failed: {e}")
-            return ImageFont.load_default()
+    # ปรับลำดับ: ใช้ Tahoma ก่อน (เพราะเห็นในเครื่องคุณมี), ถ้าไม่มีใช้ Sarabun
+    font_options = ["tahomabd.ttf", "tahoma.ttf", "Sarabun-Bold.ttf"]
+    for font_p in font_options:
+        if os.path.exists(font_p):
+            return ImageFont.truetype(font_p, fontsize)
+    
+    # ถ้าหาไม่เจอจริงๆ ให้โหลด Sarabun อัตโนมัติ
+    FONT_URL = "https://github.com/google/fonts/raw/main/ofl/sarabun/Sarabun-Bold.ttf"
     try:
-        return ImageFont.truetype(FONT_PATH, fontsize)
-    except Exception:
+        r = requests.get(FONT_URL, timeout=15)
+        with open("Sarabun-Bold.ttf", 'wb') as f: f.write(r.content)
+        return ImageFont.truetype("Sarabun-Bold.ttf", fontsize)
+    except:
         return ImageFont.load_default()
 
 def wrap_and_chunk_thai_text(text, max_chars_per_line=32, max_lines=2):
@@ -164,7 +159,6 @@ def wrap_and_chunk_thai_text(text, max_chars_per_line=32, max_lines=2):
             if len(current_chunk) == max_lines:
                 chunks.append("\n".join(current_chunk))
                 current_chunk = []
-    
     if current_line: current_chunk.append(current_line)
     if current_chunk: chunks.append("\n".join(current_chunk))
     return chunks
@@ -175,227 +169,130 @@ def create_text_clip(text_chunk, size=(720, 1280)):
         draw = ImageDraw.Draw(img)
         font_size = 36
         font = get_font(font_size)
-        
         lines = text_chunk.split('\n')
         line_height = font_size + 15
         total_height = len(lines) * line_height
-        
         margin_top = 150 
         start_y = margin_top 
-        
         draw.rectangle([20, start_y - 15, size[0]-20, start_y + total_height + 15], fill=(0,0,0,160))
-        
         cur_y = start_y
         for line in lines:
-            try:
-                bbox = draw.textbbox((0, 0), line, font=font)
-                text_width = bbox[2] - bbox[0]
-            except AttributeError:
-                text_width = draw.textlength(line, font=font)
-                
+            text_width = draw.textlength(line, font=font)
             x = (size[0] - text_width) / 2
             draw.text((x-2, cur_y), line, font=font, fill="black")
             draw.text((x+2, cur_y), line, font=font, fill="black")
             draw.text((x, cur_y), line, font=font, fill="white")
             cur_y += line_height
-            
         return ImageClip(np.array(img))
-    except Exception as e:
-        print(f"Error creating text clip: {e}")
-        return None
+    except: return None
 
 # ---------------------------------------------------------
-# 🔊 Audio & Components
+# 🔊 Audio (Normal Speed Fix)
 # ---------------------------------------------------------
 async def create_voice_safe(text, filename):
     try:
-        communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+25%")
+        # ✅ ปรับ rate เป็น +0% เพื่อความเร็วปกติ
+        communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+0%")
         await communicate.save(filename)
     except:
         try: tts = gTTS(text=text, lang='th'); tts.save(filename)
         except: pass
 
 def create_watermark_clip(duration):
+    logo_path = "my_logo.png" 
+    if not os.path.exists(logo_path): return None
     try:
-        logo_path = "my_logo.png" 
-        if not os.path.exists(logo_path): return None
         return (ImageClip(logo_path).set_duration(duration)
                 .resize(width=200).set_opacity(0.9).set_position(("right", "top")))
     except: return None
 
-# ⭐ เพิ่มฟังก์ชันสร้างพื้นที่ Ads Area
 def create_ads_clip(duration):
-    ad_width = 720
     ad_path = "my_ads.png"
-
+    if not os.path.exists(ad_path): return None
     try:
-        if os.path.exists(ad_path):
-            # 1. โหลดรูปและปรับขนาดเฉพาะความกว้างเป็น 720 (ส่วนสูงจะคงอัตราส่วนเดิมอัตโนมัติ ภาพไม่เบี้ยว)
-            ad_clip = ImageClip(ad_path).resize(width=ad_width)
-            
-            # 2. ดึงความสูงจริงของรูปหลังจากย่อ/ขยายให้พอดี 720 แล้ว
-            actual_height = ad_clip.h
-            
-            # 3. คำนวณแกน Y: สูงวิดีโอ (1280) - ความสูงจริง - ระยะห่างขอบล่าง (30)
-            y_position = 1280 - actual_height - 30
-            
-            # 4. ตั้งค่าตำแหน่งและเวลา
-            ad_clip = ad_clip.set_position(("center", y_position)).set_duration(duration)
-            return ad_clip
-        else:
-            # ไม่มีรูปโฆษณา -> สร้าง Default Box (ปรับให้สูงขึ้นนิดนึงเป็น 300 จะได้ดูสวย)
-            default_height = 300
-            y_position = 1280 - default_height - 80
-            
-            img = Image.new('RGBA', (ad_width, default_height), (255, 255, 255, 180)) 
-            draw = ImageDraw.Draw(img)
-            font_size = 36
-            font = get_font(font_size)
-            
-            text = f"พื้นที่โฆษณาว่าง\nกว้าง {ad_width} px สนใจ Inbox"
-            
-            # คำนวณกึ่งกลางเพื่อวาดข้อความ
-            try:
-                bbox = draw.multiline_textbbox((0, 0), text, font=font, align="center")
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-            except AttributeError:
-                text_w = 300
-                text_h = 80
-                
-            x = (ad_width - text_w) / 2
-            y = (default_height - text_h) / 2
-            
-            draw.multiline_text((x, y), text, font=font, fill="#333333", align="center")
-            
-            placeholder_clip = (ImageClip(np.array(img))
-                                .set_position(("center", y_position))
-                                .set_duration(duration))
-            return placeholder_clip
-    except Exception as e:
-        print(f"Error creating ads clip: {e}")
-        return None
+        ad_clip = ImageClip(ad_path).resize(width=720)
+        y_position = 1280 - ad_clip.h - 30
+        return ad_clip.set_position(("center", y_position)).set_duration(duration)
+    except: return None
 
 # ---------------------------------------------------------
-# 🎞️ Main Process Logic
+# 🎞️ Main Process
 # ---------------------------------------------------------
 def process_video_background(task_id, scenes, topic):
-    print(f"[{task_id}] 🎬 Starting Process (Topic: {topic})...")
+    print(f"[{task_id}] 🎬 Starting Process (Normal Speed)...")
     output_filename = f"video_{task_id}.mp4"
-    
     master_image_path = f"master_{task_id}.jpg"
-    is_master_valid = False 
     
-    print(f"[{task_id}] 🖼️ Fetching Master Image for topic: {topic}")
-    if search_real_image(topic, master_image_path):
-        is_master_valid = True
-        smart_resize_image(master_image_path)
-        print(f"[{task_id}] ✅ Master Image Set from Topic!")
-    else:
-        print(f"[{task_id}] ⚠️ Topic search failed. Creating placeholder.")
+    # ดึงรูปหลักจาก Topic
+    if not search_real_image(topic, master_image_path):
         Image.new('RGB', (720, 1280), (20,20,20)).save(master_image_path)
-        is_master_valid = False
 
     try:
         valid_clips = []
         for i, scene in enumerate(scenes):
             gc.collect()
-            print(f"[{task_id}] Processing Scene {i+1}/{len(scenes)}...")
-            
             img_file = f"temp_{task_id}_{i}.jpg"
             audio_file = f"temp_{task_id}_{i}.mp3"
             clip_output = f"clip_{task_id}_{i}.mp4"
 
-            prompt = scene.get('image_url') or scene.get('imageUrl') or ''
-            used_specific_image = False
-            
-            if prompt and "SELECT" not in prompt and "GALLERY" not in prompt and len(prompt) > 5:
-                if "http" in prompt:
-                    if download_image_from_url(prompt, img_file): used_specific_image = True
-                elif not used_specific_image:
-                    if search_real_image(prompt, img_file): used_specific_image = True
-
-            if used_specific_image:
-                smart_resize_image(img_file)
-                if not is_master_valid:
-                    shutil.copy(img_file, master_image_path)
-                    is_master_valid = True
+            # จัดการรูปภาพในแต่ละ Scene
+            prompt = scene.get('image_url') or ""
+            if prompt.startswith("http"):
+                download_image_from_url(prompt, img_file)
             else:
                 shutil.copy(master_image_path, img_file)
 
-            script_text = scene.get('script') or scene.get('caption') or "No content."
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(create_voice_safe(script_text, audio_file))
+            # สร้างเสียงพูด (Normal Speed)
+            script_text = scene.get('script') or "ไม่มีเนื้อหาข่าว"
+            asyncio.run(create_voice_safe(script_text, audio_file))
 
             if os.path.exists(audio_file) and os.path.exists(img_file):
-                try:
-                    audio = AudioFileClip(audio_file)
-                    dur = audio.duration
-                    
-                    img_clip = ImageClip(img_file).set_duration(dur)
-                    
-                    chunks = wrap_and_chunk_thai_text(script_text, max_chars_per_line=32, max_lines=2)
-                    total_chars = max(sum(len(c.replace('\n', '')) for c in chunks), 1)
-                    
-                    sub_clips = []
-                    current_time = 0.0
-                    for chunk in chunks:
-                        chunk_duration = (len(chunk.replace('\n', '')) / total_chars) * dur
-                        tc = create_text_clip(chunk, size=(720, 1280))
-                        if tc is not None:
-                            tc = tc.set_start(current_time).set_duration(chunk_duration)
-                            sub_clips.append(tc)
-                        current_time += chunk_duration
-                    
-                    watermark = create_watermark_clip(dur)
-                    ads_clip = create_ads_clip(dur) # ⭐ เรียกใช้งานโฆษณา
-                    
-                    # รวมเลเยอร์ทั้งหมด (เพิ่ม ads_clip ต่อท้าย)
-                    layers = [img_clip] + sub_clips
-                    if watermark: layers.append(watermark)
-                    if ads_clip: layers.append(ads_clip)
-                    
-                    video = CompositeVideoClip(layers).set_audio(audio)
-                    video.write_videofile(clip_output, fps=15, codec='libx264', audio_codec='aac', preset='ultrafast', threads=2, logger=None)
-                    valid_clips.append(clip_output)
-                    
-                    video.close(); audio.close(); img_clip.close()
-                except Exception as e: print(f"Scene Error: {e}")
+                audio = AudioFileClip(audio_file)
+                dur = audio.duration
+                img_clip = ImageClip(img_file).set_duration(dur)
+                
+                # ทำ Subtitles
+                chunks = wrap_and_chunk_thai_text(script_text)
+                total_chars = max(sum(len(c) for c in chunks), 1)
+                sub_clips = []
+                current_time = 0.0
+                for chunk in chunks:
+                    chunk_duration = (len(chunk) / total_chars) * dur
+                    tc = create_text_clip(chunk)
+                    if tc: sub_clips.append(tc.set_start(current_time).set_duration(chunk_duration))
+                    current_time += chunk_duration
+
+                layers = [img_clip] + sub_clips
+                wm = create_watermark_clip(dur)
+                ad = create_ads_clip(dur)
+                if wm: layers.append(wm)
+                if ad: layers.append(ad)
+
+                video = CompositeVideoClip(layers).set_audio(audio)
+                video.write_videofile(clip_output, fps=15, codec='libx264', preset='ultrafast', logger=None)
+                valid_clips.append(clip_output)
+                video.close(); audio.close()
 
         if valid_clips:
-            print(f"[{task_id}] 🎞️ Merging {len(valid_clips)} clips...")
             clips = [VideoFileClip(c) for c in valid_clips]
             final = concatenate_videoclips(clips, method="compose")
-            
-            total_duration = int(final.duration) 
-            
-            final.write_videofile(output_filename, fps=15, bitrate="2000k", preset='ultrafast')
+            final.write_videofile(output_filename, fps=15, preset='ultrafast')
             
             url = upload_to_gcs(output_filename)
             if url:
-                try:
-                    payload = {
-                        'id': task_id, 
-                        'video_url': url, 
-                        'status': 'success',
-                        'video_duration': total_duration 
-                    }
-                    requests.post(N8N_WEBHOOK_URL, json=payload, timeout=20)
-                    print(f"[{task_id}] ✅ Callback sent (Duration: {total_duration}s)!")
-                except Exception as e: print(f"Webhook Error: {e}")
+                payload = {'id': task_id, 'video_url': url, 'status': 'success', 'video_duration': int(final.duration)}
+                requests.post(N8N_WEBHOOK_URL, json=payload, timeout=20)
             
             final.close()
             for c in clips: c.close()
 
-    except Exception as e: print(f"Error: {e}")
+    except Exception as e: print(f"❌ Error: {e}")
     finally:
-        try:
-            for f in os.listdir():
-                if task_id in f and f.endswith(('.jpg', '.mp3', '.mp4')):
-                    try: os.remove(f)
-                    except: pass
-        except: pass
+        # ล้างไฟล์ขยะ
+        for f in os.listdir():
+            if task_id in f:
+                try: os.remove(f)
+                except: pass
 
 @app.route('/create-video', methods=['POST'])
 def api_create_video():
@@ -403,15 +300,9 @@ def api_create_video():
     scenes = data.get('scenes', [])
     task_id = data.get('task_id') or str(uuid.uuid4())
     topic = data.get('topic') or ""
-    
-    if not scenes: return jsonify({"error": "No scenes provided"}), 400
-    
-    print(f"🚀 Received Task: {task_id} | Topic: {topic}")
-    thread = threading.Thread(target=process_video_background, args=(task_id, scenes, topic))
-    thread.start()
-    
+    if not scenes: return jsonify({"error": "No scenes"}), 400
+    threading.Thread(target=process_video_background, args=(task_id, scenes, topic)).start()
     return jsonify({"status": "processing", "task_id": task_id}), 202
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
