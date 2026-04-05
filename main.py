@@ -39,7 +39,7 @@ app = Flask(__name__)
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed"
 
 # ⚙️ Google Cloud Storage Config
-BUCKET_NAME = "n8n-video-tamprakan-news" 
+BUCKET_NAME = "n8n-video-tumprakan-news"
 KEY_FILE_PATH = "gcs_key.json"
 
 # ---------------------------------------------------------

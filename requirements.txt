@@ -5,6 +5,8 @@ nest_asyncio
 moviepy==1.0.3
 duckduckgo_search
 Pillow>=10.0.0
+imageio[pyav]
+imageio[ffmpeg]
 edge-tts
 gTTS
 pythainlp
