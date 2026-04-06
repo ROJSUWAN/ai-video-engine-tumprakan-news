@@ -1,7 +1,110 @@
+import sys
+sys.stdout.reconfigure(line_buffering=True)
+
+import os
+import threading
+import uuid
+import requests
+import asyncio
+import nest_asyncio
+import gc
+import json
+import numpy as np
+
+# 🟢 บรรทัดนี้แหละครับที่หายไป (พระเอกของเรา)
+from flask import Flask, request, jsonify
+app = Flask(__name__) 
+
+# AI & Media Libs
+from moviepy.editor import *
 import moviepy.video.fx.all as vfx
+from PIL import Image, ImageDraw, ImageFont
+import edge_tts
+
+# Google Cloud
+from google.cloud import storage
+import datetime
+
+nest_asyncio.apply()
+
+# 🔗 Config
+N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" # แก้ไขเป็น Webhook ของ n8n คุณตั้ม
+BUCKET_NAME = "n8n-video-tumprakan-news" 
+KEY_FILE_PATH = "gcs_key.json"
+
+# 🚦 Queue Control
+render_semaphore = threading.Semaphore(1)
 
 # ---------------------------------------------------------
-# 🎞️ ระบบ Render Q&A อัตโนมัติ (เลือกใส่ Avatar ได้)
+# ☁️ Helper Functions (อัปโหลด, โหลดรูป, ทำเสียง, ทำตัวเลข)
+# ---------------------------------------------------------
+def get_gcs_client():
+    gcs_json_content = os.environ.get("GCS_KEY_JSON")
+    if gcs_json_content:
+        try:
+            info = json.loads(gcs_json_content)
+            return storage.Client.from_service_account_info(info)
+        except: return None
+    elif os.path.exists(KEY_FILE_PATH):
+        return storage.Client.from_service_account_json(KEY_FILE_PATH)
+    return None
+
+def upload_to_gcs(source_file_name):
+    try:
+        storage_client = get_gcs_client()
+        if not storage_client: return None
+        destination_blob_name = os.path.basename(source_file_name)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_filename(source_file_name, timeout=300)
+        url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12), method="GET")
+        return url
+    except Exception as e:
+        print(f"❌ Upload Failed: {e}")
+        return None
+
+def download_image_from_url(url, filename):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            with open(filename, 'wb') as f: f.write(r.content)
+            return True
+    except: return False
+
+async def create_voice_safe(text, filename):
+    try:
+        communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+0%")
+        await communicate.save(filename)
+    except Exception as e:
+        print(f"Voice Error: {e}")
+
+def get_font(fontsize):
+    font_options = ["tahomabd.ttf", "tahoma.ttf", "Sarabun-Bold.ttf"]
+    for font_p in font_options:
+        if os.path.exists(font_p):
+            return ImageFont.truetype(font_p, fontsize)
+    return ImageFont.load_default()
+
+def create_timer_clip(number, size=(720, 1280)):
+    try:
+        img = Image.new('RGBA', size, (0,0,0,0))
+        draw = ImageDraw.Draw(img)
+        font = get_font(200)
+        text = str(number)
+        text_width = draw.textlength(text, font=font)
+        x = (size[0] - text_width) / 2
+        y = (size[1] - 250) / 2
+        outline_range = 8
+        for dx in range(-outline_range, outline_range+1):
+            for dy in range(-outline_range, outline_range+1):
+                draw.text((x+dx, y+dy), text, font=font, fill="black")
+        draw.text((x, y), text, font=font, fill="#ff4757")
+        return ImageClip(np.array(img))
+    except: return None
+
+# ---------------------------------------------------------
+# 🎞️ ระบบ Render Q&A อัตโนมัติ
 # ---------------------------------------------------------
 def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_time, show_avatar):
     task_id = str(task_id)
@@ -12,14 +115,12 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
         bg_file = f"bg_{task_id}.jpg"
         qa_file = f"qa_{task_id}.png"
         audio_file = f"voice_{task_id}.mp3"
-        avatar_path = "my_avatar.mp4" # <--- ไฟล์ฉากเขียวที่คุณตั้มอัปโหลดไว้
+        avatar_path = "my_avatar.mp4" 
 
         try:
-            # 1. โหลดวัตถุดิบรูปลงมาที่ Server
             download_image_from_url(bg_url, bg_file)
             download_image_from_url(qa_url, qa_file)
             
-            # 2. สร้างเสียงพากย์จาก Script
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(script, audio_file))
@@ -28,26 +129,18 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
             audio = AudioFileClip(audio_file)
             duration = audio.duration
             
-            # 3. เตรียม Layer ต่างๆ
-            # Layer 1: พื้นหลังจาก Kie AI
             bg_clip = ImageClip(bg_file).set_duration(duration).resize((720, 1280))
-            
-            # Layer 2: ป้ายคำถาม Q&A จาก HCTI (วางค่อนไปด้านบนนิดนึง)
             qa_clip = ImageClip(qa_file).set_duration(duration).resize(width=680).set_position(("center", 150))
             
             layers = [bg_clip, qa_clip]
 
-            # Layer 3: Avatar ฉากเขียว (ใส่เฉพาะถ้าติ๊ก Form ว่า "ใช้" และมีไฟล์อยู่จริง)
             if show_avatar and os.path.exists(avatar_path):
                 print(f"[{task_id}] 👤 Applying Green Screen Avatar...")
                 avatar_clip = VideoFileClip(avatar_path).loop(duration=duration).resize(height=500)
-                # 🟢 พระเอกอยู่ตรงนี้: เจาะฉากเขียว (#00FF00) ออกให้โปร่งใส
                 avatar_clip = avatar_clip.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
-                # วางไว้ตรงกลาง ด้านล่างสุด
                 avatar_clip = avatar_clip.set_position(("center", "bottom"))
                 layers.append(avatar_clip)
 
-            # Layer 4: ตัวเลขนับถอยหลัง
             timer_clips = []
             for i in range(countdown_time, 0, -1):
                 tc = create_timer_clip(i, size=(720, 1280))
@@ -56,7 +149,6 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
                     timer_clips.append(tc)
             layers.extend(timer_clips)
 
-            # Layer 5: เสียง Effect นาฬิกาจับเวลา (ถ้ามี)
             sfx_path = "sfx_countdown.mp3"
             if os.path.exists(sfx_path):
                 sfx_clip = AudioFileClip(sfx_path).subclip(0, min(countdown_time, AudioFileClip(sfx_path).duration)).set_start(start_time).volumex(0.6)
@@ -64,20 +156,15 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
             else:
                 final_audio = audio
 
-            # 4. ประกอบร่างทุก Layer
             print(f"[{task_id}] 🎬 Rendering video...")
             final_video = CompositeVideoClip(layers).set_audio(final_audio)
-            
-            # 5. สั่ง Export ไฟล์วิดีโอ (เรนเดอร์)
             final_video.write_videofile(output_name, fps=24, codec='libx264', preset='ultrafast', logger=None)
             
-            # 6. อัปโหลดขึ้น Google Cloud และยิง Webhook แจ้งกลับ n8n
             url = upload_to_gcs(output_name)
             if url:
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
                 print(f"[{task_id}] ✅ Uploaded and Webhook sent!")
 
-            # คืนพื้นที่ RAM
             final_video.close(); bg_clip.close(); qa_clip.close(); audio.close()
             if show_avatar and os.path.exists(avatar_path): avatar_clip.close()
             for t in timer_clips: t.close()
@@ -86,15 +173,11 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
         except Exception as e:
             print(f"❌ Native Render Error [{task_id}]: {e}")
         finally:
-            try: os.remove(bg_file)
-            except: pass
-            try: os.remove(qa_file)
-            except: pass
-            try: os.remove(output_name)
-            except: pass
+            for f in [bg_file, qa_file, output_name]:
+                try: os.remove(f)
+                except: pass
             gc.collect()
 
-# API รับคำสั่งจาก n8n
 @app.route('/render-native', methods=['POST'])
 def api_render_native():
     data = request.json
@@ -104,10 +187,14 @@ def api_render_native():
     script = data.get('script', 'ไม่มีสคริปต์')
     countdown_time = int(data.get('countdown_time', 5))
     start_time = float(data.get('start_time', 10.0))
-    show_avatar = data.get('show_avatar', False) # รับค่า True/False จาก n8n
+    show_avatar = data.get('show_avatar', False)
 
     if not bg_url or not qa_url:
         return jsonify({"error": "Missing image URLs"}), 400
 
     threading.Thread(target=process_native_video, args=(task_id, bg_url, qa_url, script, countdown_time, start_time, show_avatar)).start()
     return jsonify({"status": "processing", "task_id": task_id, "mode": "native"}), 202
+
+# 🟢 อีกจุดที่สำคัญ ต้องมีตัวสั่งรัน Server ครับ
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
