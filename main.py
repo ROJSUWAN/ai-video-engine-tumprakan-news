@@ -32,7 +32,7 @@ import datetime
 
 nest_asyncio.apply()
 
-# 🔗 Config (คุณตั้มเช็ก URL Webhook อีกทีนะครับ)
+# 🔗 Config
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
 KEY_FILE_PATH = "gcs_key.json"
@@ -87,7 +87,7 @@ async def create_voice_safe(text, filename, task_id):
     if not text or str(text).strip() == "": return False
     print(f"[{task_id}] 🎙️ กำลังสร้างเสียงพากย์ (TTS)...")
     try:
-        communicate = edge_tts.Communicate(str(text), "th-TH-NiwatNeural", rate="+0%")
+        communicate = edge_tts.Communicate(str(text), "th-TH-NiwatNeural")
         await communicate.save(filename)
         return True
     except Exception as e:
@@ -95,13 +95,13 @@ async def create_voice_safe(text, filename, task_id):
         return False
 
 # ---------------------------------------------------------
-# 🎞️ ระบบ Render วิดีโอ (4 ฉาก + D-ID Support)
+# 🎞️ ระบบ Render แบบ Multi-Scene (D-ID Safe Version)
 # ---------------------------------------------------------
 def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url, script_qa, script_ans, script_ad, countdown_time, show_avatar):
     task_id = str(task_id)
-    print(f"\n" + "="*50)
-    print(f"[{task_id}] 🎬 เริ่มสร้างวิดีโอ (Avatar: {show_avatar})")
-    print("="*50)
+    print(f"\n=======================================================")
+    print(f"[{task_id}] 🎬 เริ่มสร้างวิดีโอ (Avatar Mode: {show_avatar})")
+    print(f"=======================================================")
     
     with render_semaphore:
         output_name = f"final_{task_id}.mp4"
@@ -110,13 +110,13 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
         f_avatar_vid = f"did_avatar_{task_id}.mp4"
 
         try:
-            # 1. โหลดทรัพยากรทั้งหมด
-            if not download_file_from_url(qa_url, f_qa_img, task_id): raise Exception("โหลดรูป Q&A ไม่สำเร็จ")
-            if not download_file_from_url(ans_url, f_ans_img, task_id): raise Exception("โหลดรูปเฉลยไม่สำเร็จ")
+            # 1. โหลดทรัพยากร
+            download_file_from_url(qa_url, f_qa_img, task_id)
+            download_file_from_url(ans_url, f_ans_img, task_id)
             has_ad = download_file_from_url(ad_img_url, f_ad_img, task_id)
             has_did_video = download_file_from_url(avatar_video_url, f_avatar_vid, task_id)
 
-            # 2. สร้างเสียงพากย์ AI (QA, Ans, Ad)
+            # 2. ทำเสียงพากย์
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(script_qa, f_qa_aud, task_id))
@@ -126,48 +126,55 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                 has_ad_audio = loop.run_until_complete(create_voice_safe(script_ad, f_ad_aud, task_id))
             loop.close()
 
-            # --- สร้าง Scene ---
-            
-            # 🎬 SCENE 1: โจทย์คำถาม
+            # 🎬 SCENE 1: คำถาม
             qa_aud_clip = AudioFileClip(f_qa_aud)
             scene1 = ImageClip(f_qa_img).set_duration(qa_aud_clip.duration).resize((720, 1280)).set_audio(qa_aud_clip)
 
-            # 🎬 SCENE 2: พักให้คิด (Countdown)
+            # 🎬 SCENE 2: รอคิด (Countdown)
             scene2 = ImageClip(f_qa_img).set_duration(countdown_time).resize((720, 1280))
             if os.path.exists("sfx_countdown.mp3"):
                 sfx = AudioFileClip("sfx_countdown.mp3").subclip(0, min(countdown_time, 5))
                 scene2 = scene2.set_audio(sfx)
 
-            # 🎬 SCENE 3: เฉลยและคำอธิบาย
+            # 🎬 SCENE 3: เฉลย
             ans_aud_clip = AudioFileClip(f_ans_aud)
             scene3 = ImageClip(f_ans_img).set_duration(ans_aud_clip.duration).resize((720, 1280)).set_audio(ans_aud_clip)
 
-            # รวม 3 ฉากหลัก
             main_video = concatenate_videoclips([scene1, scene2, scene3])
 
-            # 👤 แปะ Avatar (ถ้าเลือกใช้)
+            # 👤 จัดการ Avatar (แก้ไข Duration Mismatch)
+            final_main = main_video
             if show_avatar:
                 target_avatar = None
                 if has_did_video: target_avatar = f_avatar_vid
                 elif os.path.exists("my_avatar.mp4"): target_avatar = "my_avatar.mp4"
 
                 if target_avatar:
-                    print(f"[{task_id}] 👤 กำลังประกอบร่าง Avatar...")
-                    avatar_clip = VideoFileClip(target_avatar).resize(height=600)
-                    avatar_clip = avatar_clip.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
-                    avatar_clip = avatar_clip.loop(duration=main_video.duration).set_position(("center", "bottom"))
-                    main_video = CompositeVideoClip([main_video, avatar_clip])
+                    print(f"[{task_id}] 👤 เจาะฉากเขียว Avatar และทำ Freeze Frame...")
+                    avatar_raw = VideoFileClip(target_avatar).resize(height=600)
+                    # เจาะฉากเขียว
+                    avatar_raw = avatar_raw.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
+                    
+                    # 🟢 ท่าไม้ตาย: ถ้าคลิปอวตารสั้นกว่าวิดีโอหลัก ให้ค้างเฟรมสุดท้ายไว้จนจบ
+                    if avatar_raw.duration < main_video.duration:
+                        freeze_duration = main_video.duration - avatar_raw.duration
+                        last_frame = avatar_raw.to_ImageClip(t=avatar_raw.duration - 0.1).set_duration(freeze_duration)
+                        avatar_clip = concatenate_videoclips([avatar_raw, last_frame])
+                    else:
+                        avatar_clip = avatar_raw.set_duration(main_video.duration)
+                        
+                    avatar_clip = avatar_clip.set_position(("center", "bottom"))
+                    final_main = CompositeVideoClip([main_video, avatar_clip])
 
-            # 🎬 SCENE 4: โฆษณา (พร้อมระบบพื้นหลังเบลอ)
-            ad_aud_clip = None 
+            # 🎬 SCENE 4: โฆษณา (พื้นหลังเบลอ)
             if has_ad:
                 print(f"[{task_id}] 📢 กำลังทำ Scene โฆษณาแบบเบลอพื้นหลัง...")
                 raw_img = PIL.Image.open(f_ad_img).convert("RGB")
                 # พื้นหลังเบลอ
                 bg_img = raw_img.resize((720, 1280), PIL.Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(radius=25))
-                bg_img = ImageEnhance.Brightness(bg_img).enhance(0.5) # ลดแสงลง 50%
+                bg_img = ImageEnhance.Brightness(bg_img).enhance(0.5)
                 ad_bg_clip = ImageClip(np.array(bg_img))
-                # รูปโฆษณาหลัก
+                # รูปหลัก (สัดส่วนไม่เพี้ยน)
                 ad_main_clip = ImageClip(f_ad_img)
                 if ad_main_clip.w / ad_main_clip.h > 720 / 1280:
                     ad_main_clip = ad_main_clip.resize(width=720)
@@ -176,43 +183,42 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                 
                 scene4 = CompositeVideoClip([ad_bg_clip, ad_main_clip.set_position("center")])
                 
+                ad_aud_clip = None
                 if has_ad_audio:
                     ad_aud_clip = AudioFileClip(f_ad_aud)
                     scene4 = scene4.set_duration(ad_aud_clip.duration).set_audio(ad_aud_clip)
                 else:
                     scene4 = scene4.set_duration(5)
                     
-                final_video = concatenate_videoclips([main_video, scene4])
+                final_video = concatenate_videoclips([final_main, scene4])
             else:
-                final_video = main_video
+                final_video = final_main
 
-            # ⚙️ สั่ง Render จริง
-            print(f"[{task_id}] ⚙️ 🎬 เริ่มกระบวนการ Render...")
+            # 🎬 สั่ง Render
+            print(f"[{task_id}] ⚙️ 🎬 กำลัง Render วิดีโอ...")
             final_video.write_videofile(output_name, fps=24, codec='libx264', preset='ultrafast', logger=None)
             
-            # 🌐 อัปโหลดและยิง Webhook กลับไป n8n
             url = upload_to_gcs(output_name, task_id)
             if url:
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-                print(f"[{task_id}] 🎉 เสร็จสมบูรณ์! ยิง Webhook แล้ว")
+                print(f"[{task_id}] 🎉 เสร็จสมบูรณ์!")
 
-            # 🧹 เคลียร์ Memory (สำคัญมาก!)
+            # 🧹 ปิดไฟล์ทั้งหมดเพื่อคืน RAM
             final_video.close(); main_video.close(); qa_aud_clip.close(); ans_aud_clip.close()
-            if ad_aud_clip: ad_aud_clip.close()
+            if has_ad and 'ad_aud_clip' in locals() and ad_aud_clip: ad_aud_clip.close()
 
         except Exception as e:
-            print(f"[{task_id}] ❌❌ Render พังกลางคัน: {e}")
+            print(f"[{task_id}] ❌❌ Render พัง: {e}")
         finally:
-            # ลบไฟล์ชั่วคราวทิ้งทั้งหมด
-            temp_files = [f_qa_img, f_ans_img, f_ad_img, f_qa_aud, f_ans_aud, f_ad_aud, f_avatar_vid, output_name]
-            for f in temp_files:
+            # ลบไฟล์ขยะ
+            for f in [f_qa_img, f_ans_img, f_ad_img, f_qa_aud, f_ans_aud, f_ad_aud, f_avatar_vid, output_name]:
                 if os.path.exists(f):
                     try: os.remove(f)
                     except: pass
             gc.collect()
 
 # ---------------------------------------------------------
-# 🌐 Flask API Endpoints
+# 🌐 Flask API
 # ---------------------------------------------------------
 @app.route('/render-native', methods=['POST'])
 def api_render_native():
@@ -220,7 +226,6 @@ def api_render_native():
     task_id = str(uuid.uuid4())
     print(f"\n📨 ได้รับงานใหม่: {task_id}")
     
-    # แยก Thread ไปทำงานเบื้องหลัง
     threading.Thread(target=process_native_video, args=(
         task_id, 
         data.get('qa_image_url'), 
