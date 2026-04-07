@@ -11,5 +11,6 @@ edge-tts
 gTTS
 pythainlp
 google-cloud-storage
+google-cloud-texttospeech
 numpy<2.0.0
 static-ffmpeg
