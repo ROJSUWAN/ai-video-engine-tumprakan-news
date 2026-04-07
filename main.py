@@ -32,31 +32,31 @@ nest_asyncio.apply()
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
 GCS_KEY_JSON = os.environ.get("GCS_KEY_JSON") 
-render_semaphore = threading.Semaphore(1) # ป้องกัน RAM บวมจากการเรนเดอร์พร้อมกัน
+render_semaphore = threading.Semaphore(1) 
 
-# 🎙️ ระบบเสียงพากย์ Google Cloud TTS (โหมด SSML ตื่นเต้น)
+# 🎙️ ระบบเสียงพากย์ Google Cloud TTS (ใช้ Standard-A แต่ใส่ SSML ตื่นเต้น)
 async def generate_voice(text, filename, use_premium, task_id):
     if not text or str(text).strip() == "": return False
     
-    # 🔵 ชั้นที่ 1: Google Cloud TTS (โหมดพิธีกรตื่นเต้น)
     if use_premium and GCS_KEY_JSON:
         try:
-            print(f"[{task_id}] 🎙️ Google Cloud TTS (Wavenet) - โหมดตื่นเต้น...")
+            print(f"[{task_id}] 🎙️ Google TTS (Standard-A) - โหมดตื่นเต้นกำลังทำงาน...")
             client = texttospeech.TextToSpeechClient.from_service_account_info(json.loads(GCS_KEY_JSON))
             
-            # บังคับความตื่นเต้นด้วย SSML (เสียงสูงขึ้น + พูดเร็วขึ้นนิดนึง)
+            # 🟢 ใช้ SSML เพื่อบังคับให้เสียง Standard ดูตื่นเต้น
             ssml_text = f"""
             <speak>
-              <prosody rate="1.1" pitch="+3st">
+              <prosody rate="1.1" pitch="+4st">
                 {str(text)}
               </prosody>
             </speak>
             """
             synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
             
+            # ใช้ th-TH-Standard-A (ตัวนี้มีชัวร์ 1,000,000% ทุกโปรเจกต์)
             voice = texttospeech.VoiceSelectionParams(
                 language_code="th-TH",
-                name="th-TH-Wavenet-A" # เสียงผู้หญิงพรีเมียม ชัดและนวล
+                name="th-TH-Standard-A" 
             )
             
             audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
@@ -66,15 +66,15 @@ async def generate_voice(text, filename, use_premium, task_id):
                 out.write(response.audio_content)
             return True
         except Exception as e:
-            print(f"⚠️ Google TTS Fail: {e} -> สลับไปใช้สำรอง")
+            print(f"⚠️ Google TTS Fail: {e} -> สลับไปใช้สำรอง Edge-TTS")
 
-    # 🔴 ชั้นที่ 2: Edge-TTS (Fallback กันงานล่ม)
+    # 🔴 Fallback ชั้นสุดท้าย
     try:
         print(f"[{task_id}] 🎙️ ใช้ Edge-TTS (สำรอง)...")
         await edge_tts.Communicate(str(text), "th-TH-NiwatNeural").save(filename)
         return True
     except Exception as e:
-        print(f"❌ Critical Error: เจนเสียงไม่ได้เลย: {e}")
+        print(f"❌ Critical Error: {e}")
         return False
 
 # 🛠️ ระบบจัดการ Avatar (Stable Frame Method)
@@ -97,7 +97,7 @@ def get_avatar_clip_stable(video_path, task_id, target_duration):
 # 🎞️ MASTER RENDER ENGINE
 def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, script_ans, script_ad, countdown, use_premium, show_avatar):
     task_id = str(task_id); output_name = f"final_{task_id}.mp4"
-    print(f"[{task_id}] เริ่มงานเรนเดอร์ (โหมด Excited Host)")
+    print(f"[{task_id}] เริ่มงานเรนเดอร์ (โหมด Excited Standard)")
 
     with render_semaphore:
         try:
@@ -114,14 +114,14 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
             has_ad = dl(ad_url, f"ad_{task_id}.png")
             has_av = show_avatar and dl(av_url, f"av_{task_id}.mp4")
 
-            # 2. Generate Audio (SSML)
+            # 2. Generate Audio
             loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
             loop.run_until_complete(generate_voice(script_qa, f"v_qa_{task_id}.mp3", use_premium, task_id))
             loop.run_until_complete(generate_voice(script_ans, f"v_ans_{task_id}.mp3", use_premium, task_id))
             if has_ad: loop.run_until_complete(generate_voice(script_ad, f"v_ad_{task_id}.mp3", use_premium, task_id))
             loop.close()
 
-            # --- Scene 1: โจทย์ ---
+            # --- Scene Construction ---
             v_qa = AudioFileClip(f"v_qa_{task_id}.mp3")
             s1 = ImageClip(f"qa_{task_id}.png").set_duration(v_qa.duration).resize((1080, 1920))
             a1_ly = [v_qa]
@@ -130,13 +130,11 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
                 a1_ly.append(sfx.subclip(0, v_qa.duration) if sfx.duration > v_qa.duration else sfx)
             s1 = s1.set_audio(CompositeAudioClip(a1_ly))
 
-            # --- Scene 2: นับถอยหลัง ---
             s2 = ImageClip(f"qa_{task_id}.png").set_duration(countdown).resize((1080, 1920))
             if os.path.exists("sfx_countdown.mp3"):
                 sfx_cd = AudioFileClip("sfx_countdown.mp3")
                 s2 = s2.set_audio(audio_loop(sfx_cd, duration=countdown) if sfx_cd.duration < countdown else sfx_cd.subclip(0, countdown))
 
-            # --- Scene 3: เฉลย ---
             v_ans = AudioFileClip(f"v_ans_{task_id}.mp3")
             s3 = ImageClip(f"ans_{task_id}.png").set_duration(v_ans.duration).resize((1080, 1920))
             a3_ly = [v_ans]
@@ -147,12 +145,10 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
 
             final_v = concatenate_videoclips([s1, s2, s3])
             
-            # 👤 Avatar Hybrid
             if show_avatar:
                 av = get_avatar_clip_stable(f"av_{task_id}.mp4", task_id, final_v.duration) if has_av else None
                 if av: final_v = CompositeVideoClip([final_v, av.set_position(("right", "bottom"))])
 
-            # 📺 โฆษณา
             if has_ad:
                 ad_parts = []
                 if os.path.exists("sfx_transition.mp3"):
@@ -161,24 +157,22 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
                 bg = ImageClip(np.array(raw_ad.resize((1080, 1920)).filter(ImageFilter.GaussianBlur(25))))
                 fg = ImageClip(f"ad_{task_id}.png").resize(width=1080) if raw_ad.size[0]/raw_ad.size[1] > 1080/1920 else ImageClip(f"ad_{task_id}.png").resize(height=1600)
                 v_ad = AudioFileClip(f"v_ad_{task_id}.mp3")
-                ad_parts.append(CompositeVideoClip([bg, fg.set_position("center")]).set_duration(v_ad.duration).set_audio(v_ad))
+                s4 = CompositeVideoClip([bg, fg.set_position("center")]).set_duration(v_ad.duration).set_audio(v_ad)
+                ad_parts.append(s4)
                 final_v = concatenate_videoclips([final_v] + ad_parts)
 
-            # 🎵 BGM คลอ
             if os.path.exists("bgm_main.mp3"):
                 bgm = audio_loop(AudioFileClip("bgm_main.mp3").volumex(0.12), duration=final_v.duration)
                 final_v = final_v.set_audio(CompositeAudioClip([final_v.audio, bgm]))
 
-            # ⚙️ Render
             final_v.write_videofile(output_name, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
             
-            # ☁️ อัปโหลด
             client = storage.Client.from_service_account_info(json.loads(GCS_KEY_JSON))
             blob = client.bucket(BUCKET_NAME).blob(output_name); blob.upload_from_filename(output_name)
             url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12))
             
             requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ!")
+            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ (ด้วยเสียง Standard-A ตื่นเต้น)!")
 
         except Exception as e: print(f"❌ Error: {e}")
         finally:
