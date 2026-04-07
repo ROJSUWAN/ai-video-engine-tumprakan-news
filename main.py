@@ -11,7 +11,15 @@ import gc
 import json
 import numpy as np
 import time
-import subprocess # <-- เพิ่มมาเพื่อใช้สั่งงานระบบโดยตรง
+import subprocess
+
+# 🚀 ท่าไม้ตายสุดท้าย: บังคับแอด PATH FFmpeg
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    print("✅ FFmpeg path added successfully!")
+except Exception as e:
+    print(f"⚠️ Warning: Could not add static-ffmpeg path: {e}")
 
 # 🟢 ประกาศ Flask App
 from flask import Flask, request, jsonify
@@ -41,12 +49,12 @@ KEY_FILE_PATH = "gcs_key.json"
 render_semaphore = threading.Semaphore(1)
 
 # ---------------------------------------------------------
-# 🛠 ท่าไม้ตาย: ฟังก์ชันซ่อมไฟล์วิดีโอ (Video Repair)
+# 🛠 ฟังก์ชันซ่อมไฟล์วิดีโอ (ซ่อมไฟล์เน่าจาก D-ID)
 # ---------------------------------------------------------
 def repair_video_file(input_path, output_path, task_id):
     print(f"[{task_id}] 🛠 กำลังซ่อมแซมไฟล์วิดีโอด้วย FFmpeg...")
     try:
-        # ใช้ ffmpeg สั่ง Re-encode ใหม่ให้เป็น h264 มาตรฐานที่ MoviePy อ่านออกแน่นอน
+        # สั่งเรียก ffmpeg ตรงๆ (ซึ่งตอนนี้จะมีอยู่ใน Path แน่นอน)
         cmd = [
             'ffmpeg', '-y', '-i', input_path,
             '-c:v', 'libx264', '-preset', 'ultrafast',
@@ -102,16 +110,13 @@ def download_file_from_url(url, filename, task_id):
             with open(filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        if os.path.exists(filename) and os.path.getsize(filename) > 5000:
-            return True
-        return False
+        return True
     except Exception as e:
         print(f"[{task_id}] ❌ ดาวน์โหลดไม่สำเร็จ: {e}")
         return False
 
 async def create_voice_safe(text, filename, task_id):
     if not text or str(text).strip() == "": return False
-    print(f"[{task_id}] 🎙️ กำลังสร้างเสียงพากย์ (TTS)...")
     try:
         communicate = edge_tts.Communicate(str(text), "th-TH-NiwatNeural")
         await communicate.save(filename)
@@ -119,20 +124,19 @@ async def create_voice_safe(text, filename, task_id):
     except: return False
 
 # ---------------------------------------------------------
-# 🎞️ ระบบ Render แบบ "ล้างป่าช้า" (D-ID God Mode)
+# 🎞️ ระบบ Render แบบ Multi-Scene (D-ID God Mode)
 # ---------------------------------------------------------
 def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url, script_qa, script_ans, script_ad, countdown_time, show_avatar):
     task_id = str(task_id)
-    print(f"\n=======================================================")
+    print(f"\n" + "="*50)
     print(f"[{task_id}] 🎬 เริ่มสร้างวิดีโอ (Avatar: {show_avatar})")
-    print(f"=======================================================")
+    print("="*50)
     
     with render_semaphore:
         output_name = f"final_{task_id}.mp4"
         f_qa_img, f_ans_img, f_ad_img = f"qa_{task_id}.png", f"ans_{task_id}.png", f"ad_{task_id}.png"
         f_qa_aud, f_ans_aud, f_ad_aud = f"qa_{task_id}.mp3", f"ans_{task_id}.mp3", f"ad_{task_id}.mp3"
-        f_avatar_raw = f"did_raw_{task_id}.mp4"
-        f_avatar_fixed = f"did_fixed_{task_id}.mp4"
+        f_avatar_raw, f_avatar_fixed = f"did_raw_{task_id}.mp4", f"did_fixed_{task_id}.mp4"
 
         try:
             # 1. โหลดทรัพยากร
@@ -141,7 +145,7 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
             has_ad = download_file_from_url(ad_img_url, f_ad_img, task_id)
             has_did = download_file_from_url(avatar_video_url, f_avatar_raw, task_id)
 
-            # 2. ทำเสียงพากย์
+            # 2. เสียง TTS
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(script_qa, f_qa_aud, task_id))
@@ -151,29 +155,26 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                 has_ad_audio = loop.run_until_complete(create_voice_safe(script_ad, f_ad_aud, task_id))
             loop.close()
 
-            # --- สร้างฉากหลัก ---
+            # --- ฉากคำถาม ---
             qa_aud_clip = AudioFileClip(f_qa_aud)
-            scene1 = ImageClip(f_qa_img).set_duration(qa_aud_clip.duration).resize((720, 1280)).set_audio(qa_aud_clip)
-            scene2 = ImageClip(f_qa_img).set_duration(countdown_time).resize((720, 1280))
+            s1 = ImageClip(f_qa_img).set_duration(qa_aud_clip.duration).resize((720, 1280)).set_audio(qa_aud_clip)
+            s2 = ImageClip(f_qa_img).set_duration(countdown_time).resize((720, 1280))
             if os.path.exists("sfx_countdown.mp3"):
                 sfx = AudioFileClip("sfx_countdown.mp3").subclip(0, min(countdown_time, 5))
-                scene2 = scene2.set_audio(sfx)
+                s2 = s2.set_audio(sfx)
             ans_aud_clip = AudioFileClip(f_ans_aud)
-            scene3 = ImageClip(f_ans_img).set_duration(ans_aud_clip.duration).resize((720, 1280)).set_audio(ans_aud_clip)
+            s3 = ImageClip(f_ans_img).set_duration(ans_aud_clip.duration).resize((720, 1280)).set_audio(ans_aud_clip)
+            main_video = concatenate_videoclips([s1, s2, s3])
 
-            main_video = concatenate_videoclips([scene1, scene2, scene3])
-
-            # 👤 การจัดการ Avatar (ระบบซ่อมไฟล์อัตโนมัติ)
+            # 👤 Avatar Handling
             final_main = main_video
             if show_avatar:
                 target_avatar = None
-                
-                # ถ้าโหลดจาก D-ID มาได้ ให้ซ่อมก่อนใช้
                 if has_did:
+                    # 🛠 พยายามซ่อมไฟล์ด้วย FFmpeg
                     if repair_video_file(f_avatar_raw, f_avatar_fixed, task_id):
                         target_avatar = f_avatar_fixed
                 
-                # ถ้า D-ID พัง ให้ใช้ Fallback ในเครื่อง
                 if not target_avatar and os.path.exists("my_avatar.mp4"):
                     print(f"[{task_id}] 👤 ใช้ไฟล์สำรอง (my_avatar.mp4)")
                     target_avatar = "my_avatar.mp4"
@@ -182,46 +183,40 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                     try:
                         avatar_raw = VideoFileClip(target_avatar).resize(height=600)
                         avatar_raw = avatar_raw.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
-                        
-                        # Logic Freeze Frame
                         if avatar_raw.duration < main_video.duration:
                             freeze_dur = main_video.duration - avatar_raw.duration
                             last_f = avatar_raw.to_ImageClip(t=avatar_raw.duration - 0.1).set_duration(freeze_dur)
                             avatar_clip = concatenate_videoclips([avatar_raw, last_f])
                         else:
                             avatar_clip = avatar_raw.set_duration(main_video.duration)
-                            
                         avatar_clip = avatar_clip.set_position(("center", "bottom"))
                         final_main = CompositeVideoClip([main_video, avatar_clip])
-                    except Exception as e:
-                        print(f"[{task_id}] ❌ แปะอวตารไม่สำเร็จแม้จะซ่อมแล้ว: {e}")
+                    except Exception as av_e:
+                        print(f"[{task_id}] ❌ แปะอวตารพัง: {av_e}")
 
-            # 🎬 SCENE 4: โฆษณา (พื้นหลังเบลอ)
+            # 🎬 Ad Scene
             if has_ad:
                 raw_img = PIL.Image.open(f_ad_img).convert("RGB")
                 bg_img = raw_img.resize((720, 1280), PIL.Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(radius=25))
                 bg_img = ImageEnhance.Brightness(bg_img).enhance(0.5)
-                ad_bg_clip = ImageClip(np.array(bg_img))
-                ad_main = ImageClip(f_ad_img)
-                if ad_main.w / ad_main.h > 720 / 1280: ad_main = ad_main.resize(width=720)
-                else: ad_main = ad_main.resize(height=1000)
-                scene4 = CompositeVideoClip([ad_bg_clip, ad_main.set_position("center")])
-                
-                ad_aud_clip = None
+                ad_bg = ImageClip(np.array(bg_img))
+                ad_fg = ImageClip(f_ad_img)
+                if ad_fg.w / ad_fg.h > 720 / 1280: ad_fg = ad_fg.resize(width=720)
+                else: ad_fg = ad_fg.resize(height=1000)
+                s4 = CompositeVideoClip([ad_bg, ad_fg.set_position("center")])
                 if has_ad_audio:
-                    ad_aud_clip = AudioFileClip(f_ad_aud)
-                    scene4 = scene4.set_duration(ad_aud_clip.duration).set_audio(ad_aud_clip)
-                else: scene4 = scene4.set_duration(5)
-                final_video = concatenate_videoclips([final_main, scene4])
+                    ad_aud = AudioFileClip(f_ad_aud)
+                    s4 = s4.set_duration(ad_aud.duration).set_audio(ad_aud)
+                else: s4 = s4.set_duration(5)
+                final_video = concatenate_videoclips([final_main, s4])
             else:
                 final_video = final_main
 
-            # ⚙️ Render
+            # 🎬 Render
             final_video.write_videofile(output_name, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
-            
             url = upload_to_gcs(output_name, task_id)
             if url: requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ!")
+            print(f"[{task_id}] 🎉 สำเร็จ!")
 
             final_video.close(); main_video.close(); qa_aud_clip.close(); ans_aud_clip.close()
             if has_ad and 'ad_aud_clip' in locals() and ad_aud_clip: ad_aud_clip.close()

@@ -12,3 +12,4 @@ gTTS
 pythainlp
 google-cloud-storage
 numpy<2.0.0
+static-ffmpeg
