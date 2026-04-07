@@ -10,15 +10,13 @@ from PIL import ImageFilter, ImageEnhance
 if not hasattr(PIL.Image, 'ANTIALIAS'): 
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
-# 🚀 บังคับใช้ FFmpeg แบบรัดกุม
+# 🚀 ตั้งค่า FFmpeg ให้เสถียรบน Railway
 try:
     import static_ffmpeg
     static_ffmpeg.add_paths()
-    # ใช้คำสั่งระบบตรงๆ เพราะ add_paths() มันแอดลง PATH ให้แล้ว
     FFMPEG_PATH = "ffmpeg"
-    print(f"✅ FFmpeg Path is now available in system PATH")
+    print(f"✅ FFmpeg Path: {FFMPEG_PATH}")
 except Exception as e:
-    print(f"⚠️ FFmpeg Path Error: {e}")
     FFMPEG_PATH = "ffmpeg"
 
 from moviepy.editor import *
@@ -30,77 +28,80 @@ import datetime
 
 nest_asyncio.apply()
 
-# 🔗 Global Config
+# 🔗 Configuration
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
 ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY") 
-render_semaphore = threading.Semaphore(1)
+render_semaphore = threading.Semaphore(1) # บัตรคิวเรนเดอร์ (กัน RAM บวม)
 
-# 🎙️ ระบบสร้างเสียงพากย์ (ElevenLabs / Edge-TTS)
+# 🎙️ ระบบเสียงพากย์ ElevenLabs Turbo v2.5
 async def generate_voice(text, filename, use_eleven, task_id):
     if not text or str(text).strip() == "": return False
     try:
         if use_eleven and ELEVEN_API_KEY:
-            print(f"[{task_id}] 🎙️ ElevenLabs Generate...")
-            voice_id = "pNInz6obpgDQGcFmaJgB" 
+            print(f"[{task_id}] 🎙️ ElevenLabs (Turbo v2.5) กำลังทำงาน...")
+            voice_id = "pNInz6obpgDQGcFmaJgB" # Voice ID ของพี่
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json"}
             payload = {
                 "text": str(text),
-                "model_id": "eleven_multilingual_v2",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+                "model_id": "eleven_turbo_v2_5", # 🟢 บังคับใช้ Turbo v2.5 ชัดและเร็ว
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8}
             }
             r = requests.post(url, json=payload, headers=headers)
             if r.status_code == 200:
                 with open(filename, 'wb') as f: f.write(r.content)
                 return True
+            print(f"[{task_id}] ⚠️ ElevenLabs Fail ({r.status_code}): {r.text}")
         
+        # Fallback: Edge-TTS (ฟรี)
+        print(f"[{task_id}] 🎙️ สลับใช้ Edge-TTS...")
         await edge_tts.Communicate(str(text), "th-TH-NiwatNeural").save(filename)
         return True
     except Exception as e:
         print(f"❌ TTS Error: {e}")
         return False
 
-# 🛠️ ฟังก์ชันดึงเฟรมอวตาร
+# 🛠️ ระบบจัดการ Avatar (Image Sequence Stable)
 def get_avatar_clip_stable(video_path, task_id, target_duration):
     temp_dir = f"frames_{task_id}"
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     os.makedirs(temp_dir)
     try:
+        # ระเบิดเฟรมออกมาเพื่อความเสถียร 100% บน Cloud
         cmd = [FFMPEG_PATH, '-y', '-i', video_path, '-vf', "scale=trunc(iw/2)*2:trunc(ih/2)*2", f"{temp_dir}/f_%04d.png"]
         subprocess.run(cmd, check=True, capture_output=True)
         frames = [f"{temp_dir}/{img}" for img in sorted(os.listdir(temp_dir))]
         if not frames: return None
+        
         clip = ImageSequenceClip(frames, fps=24).resize(height=450)
-        clip = clip.fx(vfx.mask_color, color=[0, 255, 0], thr=140, s=10) 
+        clip = clip.fx(vfx.mask_color, color=[0, 255, 0], thr=140, s=10) # เจาะเขียว
         
         if clip.duration < target_duration:
-            f_dur = target_duration - clip.duration
-            last_f = clip.to_ImageClip(t=clip.duration-0.1).set_duration(f_dur)
-            clip = concatenate_videoclips([clip, last_f])
+            clip = concatenate_videoclips([clip, clip.to_ImageClip(t=clip.duration-0.1).set_duration(target_duration-clip.duration)])
         else:
             clip = clip.set_duration(target_duration)
         return clip
-    except:
-        return None
+    except: return None
 
 # ---------------------------------------------------------
-# 🎞️ MASTER RENDER ENGINE (Fixed Audio Logic)
+# 🎞️ MASTER RENDER ENGINE (Checked Version)
 # ---------------------------------------------------------
 def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, script_ans, script_ad, countdown, use_eleven, show_avatar):
-    task_id = str(task_id)
-    output_name = f"final_{task_id}.mp4"
-    print(f"[{task_id}] เริ่มงานเรนเดอร์...")
+    task_id = str(task_id); output_name = f"final_{task_id}.mp4"
+    print(f"[{task_id}] --- เริ่มเรนเดอร์วิดีโอ (Turbo v2.5 Edition) ---")
 
     with render_semaphore:
         try:
-            # 1. ดาวน์โหลด
-            def dl(u, f):
-                if not u or str(u) == "None" or str(u).strip() == "": return False
-                r = requests.get(u, timeout=60)
-                if r.status_code == 200:
-                    with open(f, 'wb') as file: file.write(r.content)
-                    return True
+            # 1. Download Resources
+            def dl(u, f): 
+                if not u or str(u).lower() == "none" or str(u).strip() == "": return False
+                try:
+                    r = requests.get(u, timeout=30)
+                    if r.status_code == 200:
+                        with open(f, 'wb') as file: file.write(r.content)
+                        return True
+                except: return False
                 return False
 
             dl(qa_url, f"qa_{task_id}.png")
@@ -108,67 +109,61 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
             has_ad = dl(ad_url, f"ad_{task_id}.png")
             has_av_file = show_avatar and dl(av_url, f"av_{task_id}.mp4")
 
-            # 2. เสียงพากย์
+            # 2. Generate Audio
             loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
             loop.run_until_complete(generate_voice(script_qa, f"v_qa_{task_id}.mp3", use_eleven, task_id))
             loop.run_until_complete(generate_voice(script_ans, f"v_ans_{task_id}.mp3", use_eleven, task_id))
             if has_ad: loop.run_until_complete(generate_voice(script_ad, f"v_ad_{task_id}.mp3", use_eleven, task_id))
             loop.close()
 
-            # --- 🧩 ฉาก 1: คำถาม (v_qa + sfx_intro) ---
+            # --- Scene 1: โจทย์คำถาม (พากย์ + Intro SFX) ---
             v_qa = AudioFileClip(f"v_qa_{task_id}.mp3")
             s1 = ImageClip(f"qa_{task_id}.png").set_duration(v_qa.duration).resize((1080, 1920))
-            a1_layers = [v_qa]
+            a1_list = [v_qa]
             if os.path.exists("sfx_intro.mp3"):
                 sfx_intro = AudioFileClip("sfx_intro.mp3").volumex(0.3)
-                # 🛑 แก้จุดตาย: ถ้า SFX ยาวกว่าพากย์ ให้ตัดออก ถ้าสั้นกว่า ให้เล่นแค่ที่มันมี
-                if sfx_intro.duration > v_qa.duration:
-                    sfx_intro = sfx_intro.subclip(0, v_qa.duration)
-                a1_layers.append(sfx_intro)
-            s1 = s1.set_audio(CompositeAudioClip(a1_layers))
+                # 🛑 ป้องกัน SFX ยาวกว่าฉากจน Error
+                s1_sfx = sfx_intro.subclip(0, v_qa.duration) if sfx_intro.duration > v_qa.duration else sfx_intro
+                a1_list.append(s1_sfx)
+            s1 = s1.set_audio(CompositeAudioClip(a1_list))
 
-            # --- 🧩 ฉาก 2: คิดเลข (sfx_countdown) ---
+            # --- Scene 2: นับถอยหลัง (Countdown SFX เท่านั้น) ---
             s2 = ImageClip(f"qa_{task_id}.png").set_duration(countdown).resize((1080, 1920))
             if os.path.exists("sfx_countdown.mp3"):
                 sfx_cd = AudioFileClip("sfx_countdown.mp3")
-                # 🛑 ถ้าไฟล์ติ๊กต่อกสั้นกว่าเวลาที่ให้คิด ให้วนลูป
-                if sfx_cd.duration < countdown:
-                    sfx_cd = audio_loop(sfx_cd, duration=countdown)
-                else:
-                    sfx_cd = sfx_cd.subclip(0, countdown)
-                s2 = s2.set_audio(sfx_cd)
+                # 🛑 วนลูปถ้า SFX สั้นกว่าเวลาถอยหลัง
+                a2_final = audio_loop(sfx_cd, duration=countdown) if sfx_cd.duration < countdown else sfx_cd.subclip(0, countdown)
+                s2 = s2.set_audio(a2_final)
 
-            # --- 🧩 ฉาก 3: เฉลย (v_ans + sfx_correct) ---
+            # --- Scene 3: เฉลย (พากย์ + Correct SFX) ---
             v_ans = AudioFileClip(f"v_ans_{task_id}.mp3")
             s3 = ImageClip(f"ans_{task_id}.png").set_duration(v_ans.duration).resize((1080, 1920))
-            a3_layers = [v_ans]
+            a3_list = [v_ans]
             if os.path.exists("sfx_correct.mp3"):
                 sfx_cor = AudioFileClip("sfx_correct.mp3").volumex(0.5)
-                if sfx_cor.duration > v_ans.duration:
-                    sfx_cor = sfx_cor.subclip(0, v_ans.duration)
-                a3_layers.append(sfx_cor)
-            s3 = s3.set_audio(CompositeAudioClip(a3_layers))
+                s3_sfx = sfx_cor.subclip(0, v_ans.duration) if sfx_cor.duration > v_ans.duration else sfx_cor
+                a3_list.append(s3_sfx)
+            s3 = s3.set_audio(CompositeAudioClip(a3_list))
 
             main_vid = concatenate_videoclips([s1, s2, s3])
 
-            # 👤 ซ้อน Avatar
+            # 👤 ซ้อน Avatar (ถ้าสั่งใช้)
             final_main = main_vid
             if show_avatar:
-                av_clip = None
-                if has_av_file: av_clip = get_avatar_clip_stable(f"av_{task_id}.mp4", task_id, main_vid.duration)
-                elif os.path.exists("my_avatar.mp4"): av_clip = get_avatar_clip_stable("my_avatar.mp4", task_id+"_f", main_vid.duration)
-                if av_clip: final_main = CompositeVideoClip([main_vid, av_clip.set_position(("right", "bottom"))])
+                av = None
+                if has_av_file: av = get_avatar_clip_stable(f"av_{task_id}.mp4", task_id, main_vid.duration)
+                elif os.path.exists("my_avatar.mp4"): av = get_avatar_clip_stable("my_avatar.mp4", task_id+"_f", main_vid.duration)
+                if av: final_main = CompositeVideoClip([main_vid, av.set_position(("right", "bottom"))])
 
             # 📺 ฉากโฆษณา
             if has_ad:
-                # Transition ฟึ่บ
                 ad_chain = []
                 if os.path.exists("sfx_transition.mp3"):
                     ad_chain.append(ColorClip((1080,1920),(0,0,0)).set_duration(0.2).set_audio(AudioFileClip("sfx_transition.mp3")))
                 
-                raw_ad = PIL.Image.open(f"ad_{task_id}.png").convert("RGB")
-                bg = ImageClip(np.array(raw_ad.resize((1080, 1920)).filter(ImageFilter.GaussianBlur(25))))
-                fg = ImageClip(f"ad_{task_id}.png").resize(width=1080) if raw_ad.size[0]/raw_ad.size[1] > 1080/1920 else ImageClip(f"ad_{task_id}.png").resize(height=1600)
+                r_ad = PIL.Image.open(f"ad_{task_id}.png").convert("RGB")
+                bg = ImageClip(np.array(r_ad.resize((1080, 1920)).filter(ImageFilter.GaussianBlur(25))))
+                fg = ImageClip(f"ad_{task_id}.png").resize(width=1080) if r_ad.size[0]/r_ad.size[1] > 1080/1920 else ImageClip(f"ad_{task_id}.png").resize(height=1600)
                 s4 = CompositeVideoClip([bg, fg.set_position("center")])
                 v_ad = AudioFileClip(f"v_ad_{task_id}.mp3")
                 s4 = s4.set_duration(v_ad.duration).set_audio(v_ad)
@@ -177,27 +172,26 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
             else: 
                 final_video = final_main
 
-            # 🎵 BGM คลอ
+            # 🎵 ใส่ BGM คลอทั้งคลิป (bgm_main)
             if os.path.exists("bgm_main.mp3"):
                 bgm = audio_loop(AudioFileClip("bgm_main.mp3").volumex(0.12), duration=final_video.duration)
                 final_video = final_video.set_audio(CompositeAudioClip([final_video.audio, bgm]))
 
-            # ⚙️ Render
+            # ⚙️ เรนเดอร์
             final_video.write_videofile(output_name, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
             
             # ☁️ อัปโหลด
             gcs_json = os.environ.get("GCS_KEY_JSON")
             client = storage.Client.from_service_account_info(json.loads(gcs_json))
-            blob = client.bucket(BUCKET_NAME).blob(output_name)
-            blob.upload_from_filename(output_name)
+            blob = client.bucket(BUCKET_NAME).blob(output_name); blob.upload_from_filename(output_name)
             url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12))
             
             requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-            print(f"[{task_id}] 🎉 สำเร็จ!")
+            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ!")
 
-        except Exception as e: 
-            print(f"❌ Render Error: {e}")
+        except Exception as e: print(f"❌ Error: {e}")
         finally:
+            # ลบไฟล์ Temp
             for f in [f"qa_{task_id}.png", f"ans_{task_id}.png", f"ad_{task_id}.png", f"v_qa_{task_id}.mp3", f"v_ans_{task_id}.mp3", f"v_ad_{task_id}.mp3", f"av_{task_id}.mp4", output_name]:
                 if os.path.exists(f): os.remove(f)
             for d in [f"frames_{task_id}", f"frames_{task_id}_f"]:
