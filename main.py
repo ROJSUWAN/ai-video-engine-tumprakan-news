@@ -1,5 +1,4 @@
 import sys
-# บังคับให้ Python พ่น Log ออกมาทันทีไม่ต้องรอ
 sys.stdout.reconfigure(line_buffering=True)
 
 import os
@@ -86,17 +85,27 @@ def upload_to_gcs(source_file_name, task_id):
         print(f"[{task_id}] ❌ [GCS] Upload Failed: {e}")
         return None
 
+# 🟢 อัปเกรดระบบโหลดรูป: ต่อท้าย .png, ปลอมตัวเนียนขึ้น, และแฉ Error จากเว็บ!
 def download_image_from_url(url, filename, task_id):
+    # คลีนช่องว่างและบังคับใส่ .png ถ้าไม่มี
+    url = url.strip()
+    if not url.endswith('.png') and not url.endswith('.jpg') and not url.endswith('.webp'):
+        url += '.png'
+        
     print(f"[{task_id}] 📥 [Download] กำลังโหลดรูปจาก: {url}")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        # ใช้ User-Agent ของ Firefox ให้ดูเหมือนคนเล่นเว็บทั่วไป
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'}
         r = requests.get(url, headers=headers, timeout=20)
+        
         if r.status_code == 200:
             with open(filename, 'wb') as f: f.write(r.content)
             print(f"[{task_id}] ✅ [Download] โหลดรูปลง Server สำเร็จ: {filename} (ขนาด {len(r.content)} bytes)")
             return True
         else:
             print(f"[{task_id}] ❌ [Download] โหลดรูปพัง! Status Code: {r.status_code}")
+            # 🟢 ทีเด็ด: พ่นข้อความที่เซิร์ฟเวอร์ด่ากลับมาให้เราอ่าน
+            print(f"[{task_id}] 🔍 สาเหตุจากเซิร์ฟเวอร์ HCTI: {r.text[:300]}") 
             return False
     except Exception as e:
         print(f"[{task_id}] ❌ [Download] Error ระหว่างโหลดรูป: {e}")
