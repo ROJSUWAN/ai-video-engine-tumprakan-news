@@ -101,7 +101,7 @@ async def create_voice_safe(text, filename, task_id):
         return False
 
 # ---------------------------------------------------------
-# 🎞️ ระบบ Render แบบแบ่ง Scene (คำถาม -> รอ -> เฉลย -> โฆษณา)
+# 🎞️ ระบบ Render แบบแบ่ง Scene
 # ---------------------------------------------------------
 def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script_ans, script_ad, countdown_time, show_avatar):
     task_id = str(task_id)
@@ -170,20 +170,18 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script
                 avatar_clip = avatar_clip.set_position(("center", "bottom"))
                 main_video = CompositeVideoClip([main_video, avatar_clip])
 
-            # 🎬 SCENE 4: โฆษณา (ต่อท้ายสุด ไม่มี Avatar บัง)
+            # 🎬 SCENE 4: โฆษณา
+            ad_aud_clip = None # 🟢 สร้างตัวแปรลอยๆ ไว้ก่อน เพื่อให้เคลียร์ RAM ได้ถูกต้องตอนจบ
             if has_ad:
                 print(f"[{task_id}] 📢 ต่อท้าย Scene โฆษณา...")
                 scene4 = ImageClip(f_ad_img).resize((720, 1280))
                 if has_ad_audio:
-                    # ถ้ามีเสียงโฆษณา ให้โชว์รูปเท่าวินาทีของเสียง
                     ad_aud_clip = AudioFileClip(f_ad_aud)
                     scene4 = scene4.set_duration(ad_aud_clip.duration).set_audio(ad_aud_clip)
                 else:
-                    # ถ้าไม่มีเสียงโฆษณา โชว์รูปค้างไว้ 5 วินาที
                     scene4 = scene4.set_duration(5)
                     
                 final_video = concatenate_videoclips([main_video, scene4])
-                if has_ad_audio: ad_aud_clip.close()
             else:
                 final_video = main_video
 
@@ -197,8 +195,12 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
                 print(f"[{task_id}] 🎉 สร้างคลิปสมบูรณ์ ยิง Webhook แล้ว!")
 
-            # 🧹 คืน RAM
-            final_video.close(); main_video.close(); qa_aud_clip.close(); ans_aud_clip.close()
+            # 🧹 คืน RAM (ปิดไฟล์เสียงทั้งหมด หลังจากเรนเดอร์เสร็จแล้วเท่านั้น!)
+            final_video.close()
+            main_video.close()
+            qa_aud_clip.close()
+            ans_aud_clip.close()
+            if ad_aud_clip: ad_aud_clip.close() # 🟢 ปิดไฟล์เสียงโฆษณาตรงนี้ ปลอดภัย 100%
 
         except Exception as e:
             print(f"[{task_id}] ❌❌ Render พังกลางคัน: {e}")
@@ -219,7 +221,6 @@ def api_render_native():
     qa_url = data.get('qa_image_url')
     ans_url = data.get('ans_image_url')
     
-    # 🟢 รับค่าโฆษณาจาก n8n
     ad_img_url = data.get('ad_image_url')
     script_ad = data.get('script_ad')
     
