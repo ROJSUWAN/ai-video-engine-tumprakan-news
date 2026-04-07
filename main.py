@@ -10,7 +10,7 @@ import nest_asyncio
 import gc
 import json
 import numpy as np
-import time
+import time # <-- เพิ่มเข้ามาเพื่อใช้หน่วงเวลา
 
 # 🟢 ประกาศ Flask App
 from flask import Flask, request, jsonify
@@ -40,7 +40,7 @@ KEY_FILE_PATH = "gcs_key.json"
 render_semaphore = threading.Semaphore(1)
 
 # ---------------------------------------------------------
-# ☁️ Helper Functions (GCS / Download / TTS)
+# ☁️ Helper Functions
 # ---------------------------------------------------------
 def get_gcs_client(task_id):
     gcs_json_content = os.environ.get("GCS_KEY_JSON")
@@ -78,19 +78,19 @@ def download_file_from_url(url, filename, task_id):
     print(f"[{task_id}] 📥 กำลังดาวน์โหลด: {url[:60]}...")
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        # ใช้ stream=True เพื่อความเสถียรในการโหลดไฟล์ใหญ่ (วิดีโอ)
-        with requests.get(url, headers=headers, timeout=60, stream=True) as r:
+        with requests.get(url, headers=headers, timeout=90, stream=True) as r:
             r.raise_for_status()
             with open(filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         
-        # ตรวจสอบว่าไฟล์ที่โหลดมามีขนาดปกติไหม (อย่างน้อยต้อง 10KB)
-        if os.path.exists(filename) and os.path.getsize(filename) > 10000:
+        # 🟢 หน่วงเวลาสักนิดเพื่อให้ OS เขียนไฟล์เสร็จชัวร์ๆ
+        time.sleep(3) 
+        
+        if os.path.exists(filename) and os.path.getsize(filename) > 20000: # ต้องใหญ่นิดนึงถึงจะเป็นวิดีโอจริง
+            print(f"[{task_id}] ✅ ดาวน์โหลดไฟล์สำเร็จ (ขนาด: {os.path.getsize(filename)} bytes)")
             return True
-        else:
-            print(f"[{task_id}] ⚠️ ไฟล์ที่โหลดมาผิดปกติ (เล็กเกินไป)")
-            return False
+        return False
     except Exception as e:
         print(f"[{task_id}] ❌ ดาวน์โหลดไม่สำเร็จ: {e}")
         return False
@@ -107,7 +107,7 @@ async def create_voice_safe(text, filename, task_id):
         return False
 
 # ---------------------------------------------------------
-# 🎞️ ระบบ Render วิดีโอ (4 ฉาก + D-ID Safe Version)
+# 🎞️ ระบบ Render แบบ Ultra Defensive (D-ID Safe)
 # ---------------------------------------------------------
 def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url, script_qa, script_ans, script_ad, countdown_time, show_avatar):
     task_id = str(task_id)
@@ -128,7 +128,7 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
             has_ad = download_file_from_url(ad_img_url, f_ad_img, task_id)
             has_did_video = download_file_from_url(avatar_video_url, f_avatar_vid, task_id)
 
-            # 2. สร้างเสียงพากย์
+            # 2. ทำเสียงพากย์
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(create_voice_safe(script_qa, f_qa_aud, task_id))
@@ -138,7 +138,7 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                 has_ad_audio = loop.run_until_complete(create_voice_safe(script_ad, f_ad_aud, task_id))
             loop.close()
 
-            # --- สร้าง Scene ---
+            # --- สร้าง Scene หลัก ---
             qa_aud_clip = AudioFileClip(f_qa_aud)
             scene1 = ImageClip(f_qa_img).set_duration(qa_aud_clip.duration).resize((720, 1280)).set_audio(qa_aud_clip)
 
@@ -152,46 +152,48 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
 
             main_video = concatenate_videoclips([scene1, scene2, scene3])
 
-            # 👤 การจัดการ Avatar (มีระบบเช็คไฟล์เสีย)
+            # 👤 การจัดการ Avatar แบบอึดพิเศษ (Fallback System)
             final_main = main_video
             if show_avatar:
                 target_avatar = None
                 
-                # ลองโหลดไฟล์ D-ID ก่อน
+                # ลองพยายามเปิดไฟล์ D-ID อย่างระมัดระวัง
                 if has_did_video:
                     try:
-                        # ทดสอบเปิดไฟล์ดูว่า MoviePy อ่านได้ไหม
-                        test_clip = VideoFileClip(f_avatar_vid)
-                        test_clip.close()
+                        print(f"[{task_id}] 👤 พยายามเปิดไฟล์วิดีโอจาก D-ID...")
+                        avatar_test = VideoFileClip(f_avatar_vid)
+                        # ถ้าอ่านได้ถึงตรงนี้ แปลว่าไฟล์ปกติ
+                        avatar_test.close()
                         target_avatar = f_avatar_vid
-                        print(f"[{task_id}] ✅ ใช้ไฟล์วิดีโอจาก D-ID ได้สำเร็จ")
                     except Exception as e:
-                        print(f"[{task_id}] ⚠️ ไฟล์ D-ID อ่านไม่ได้ (Corrupted), กำลังถอยไปใช้ Fallback...")
+                        print(f"[{task_id}] ⚠️ ไฟล์ D-ID มีปัญหา ({e}), จะสลับไปใช้ไฟล์สำรองแทน")
                 
-                # ถ้า D-ID ใช้ไม่ได้ หรือไม่มี ให้หาไฟล์ในเครื่อง
+                # ถ้าไฟล์ D-ID เสีย หรือไม่มี ให้ใช้ Fallback ในเครื่อง
                 if not target_avatar and os.path.exists("my_avatar.mp4"):
+                    print(f"[{task_id}] 👤 ใช้ไฟล์สำรอง (my_avatar.mp4) แทน")
                     target_avatar = "my_avatar.mp4"
-                    print(f"[{task_id}] 👤 ใช้ไฟล์อวตารสำรอง (my_avatar.mp4)")
 
                 if target_avatar:
-                    print(f"[{task_id}] 👤 กำลังประกอบร่าง Avatar...")
-                    avatar_raw = VideoFileClip(target_avatar).resize(height=600)
-                    avatar_raw = avatar_raw.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
-                    
-                    # Logic Freeze Frame
-                    if avatar_raw.duration < main_video.duration:
-                        freeze_duration = main_video.duration - avatar_raw.duration
-                        last_frame = avatar_raw.to_ImageClip(t=avatar_raw.duration - 0.1).set_duration(freeze_duration)
-                        avatar_clip = concatenate_videoclips([avatar_raw, last_frame])
-                    else:
-                        avatar_clip = avatar_raw.set_duration(main_video.duration)
+                    try:
+                        avatar_raw = VideoFileClip(target_avatar).resize(height=600)
+                        avatar_raw = avatar_raw.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
                         
-                    avatar_clip = avatar_clip.set_position(("center", "bottom"))
-                    final_main = CompositeVideoClip([main_video, avatar_clip])
+                        # Logic Freeze Frame
+                        if avatar_raw.duration < main_video.duration:
+                            freeze_duration = main_video.duration - avatar_raw.duration
+                            last_frame = avatar_raw.to_ImageClip(t=avatar_raw.duration - 0.1).set_duration(freeze_duration)
+                            avatar_clip = concatenate_videoclips([avatar_raw, last_frame])
+                        else:
+                            avatar_clip = avatar_raw.set_duration(main_video.duration)
+                            
+                        avatar_clip = avatar_clip.set_position(("center", "bottom"))
+                        final_main = CompositeVideoClip([main_video, avatar_clip])
+                    except Exception as e:
+                        print(f"[{task_id}] ❌ พยายามแปะอวตารแล้วแต่พังซ้ำซ้อน ({e}), จะเรนเดอร์แบบไม่มีอวตาร")
 
             # 🎬 SCENE 4: โฆษณา (พื้นหลังเบลอ)
             if has_ad:
-                print(f"[{task_id}] 📢 ทำ Scene โฆษณา...")
+                print(f"[{task_id}] 📢 กำลังทำ Scene โฆษณาแบบเบลอพื้นหลัง...")
                 raw_img = PIL.Image.open(f_ad_img).convert("RGB")
                 bg_img = raw_img.resize((720, 1280), PIL.Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(radius=25))
                 bg_img = ImageEnhance.Brightness(bg_img).enhance(0.5)
@@ -214,13 +216,13 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                 final_video = final_main
 
             # 🎬 สั่ง Render
-            print(f"[{task_id}] ⚙️ 🎬 กำลัง Render วิดีโอ...")
+            print(f"[{task_id}] ⚙️ 🎬 กำลัง Render วิดีโอหลัก...")
             final_video.write_videofile(output_name, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
             
             url = upload_to_gcs(output_name, task_id)
             if url:
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-                print(f"[{task_id}] 🎉 เสร็จสมบูรณ์!")
+                print(f"[{task_id}] 🎉 สำเร็จเรียบร้อย!")
 
             final_video.close(); main_video.close(); qa_aud_clip.close(); ans_aud_clip.close()
             if has_ad and 'ad_aud_clip' in locals() and ad_aud_clip: ad_aud_clip.close()
@@ -234,9 +236,6 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, avatar_video_url,
                     except: pass
             gc.collect()
 
-# ---------------------------------------------------------
-# 🌐 Flask API
-# ---------------------------------------------------------
 @app.route('/render-native', methods=['POST'])
 def api_render_native():
     data = request.json
@@ -251,5 +250,5 @@ def api_render_native():
     return jsonify({"status": "processing", "task_id": task_id}), 202
 
 if __name__ == '__main__':
-    print("🚀 ระบบ Video Engine (D-ID & Blur Ready) พร้อมทำงาน!")
+    print("🚀 ระบบ Video Engine (Ultra Defensive) พร้อมลุย!")
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
