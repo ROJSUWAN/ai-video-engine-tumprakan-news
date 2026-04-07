@@ -11,7 +11,7 @@ import gc
 import json
 import numpy as np
 
-# 🟢 บรรทัดนี้แหละครับที่หายไป (พระเอกของเรา)
+# 🟢 ประกาศ Flask App
 from flask import Flask, request, jsonify
 app = Flask(__name__) 
 
@@ -20,13 +20,10 @@ import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
-from moviepy.editor import *
-import moviepy.video.fx.all as vfx
-
 # AI & Media Libs
 from moviepy.editor import *
 import moviepy.video.fx.all as vfx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import ImageDraw, ImageFont
 import edge_tts
 
 # Google Cloud
@@ -36,7 +33,7 @@ import datetime
 nest_asyncio.apply()
 
 # 🔗 Config
-N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" # แก้ไขเป็น Webhook ของ n8n คุณตั้ม
+N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
 KEY_FILE_PATH = "gcs_key.json"
 
@@ -96,7 +93,7 @@ def get_font(fontsize):
 
 def create_timer_clip(number, size=(720, 1280)):
     try:
-        img = Image.new('RGBA', size, (0,0,0,0))
+        img = PIL.Image.new('RGBA', size, (0,0,0,0))
         draw = ImageDraw.Draw(img)
         font = get_font(200)
         text = str(number)
@@ -120,13 +117,12 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
     
     with render_semaphore:
         output_name = f"final_native_{task_id}.mp4"
-        bg_file = f"bg_{task_id}.jpg"
         qa_file = f"qa_{task_id}.png"
         audio_file = f"voice_{task_id}.mp3"
         avatar_path = "my_avatar.mp4" 
 
         try:
-            download_image_from_url(bg_url, bg_file)
+            # 🟢 โหลดแค่รูป Q&A ที่เป็นแบบเต็มจอมาแล้ว (ประหยัดเวลาและ RAM)
             download_image_from_url(qa_url, qa_file)
             
             loop = asyncio.new_event_loop()
@@ -137,10 +133,10 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
             audio = AudioFileClip(audio_file)
             duration = audio.duration
             
-            bg_clip = ImageClip(bg_file).set_duration(duration).resize((720, 1280))
-            qa_clip = ImageClip(qa_file).set_duration(duration).resize(width=680).set_position(("center", 150))
+            # 🟢 ให้รูป Q&A เป็นเลเยอร์หลัก ขยายเต็มจอ 720x1280 ทันที
+            qa_clip = ImageClip(qa_file).set_duration(duration).resize((720, 1280))
             
-            layers = [bg_clip, qa_clip]
+            layers = [qa_clip]
 
             if show_avatar and os.path.exists(avatar_path):
                 print(f"[{task_id}] 👤 Applying Green Screen Avatar...")
@@ -173,7 +169,8 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
                 print(f"[{task_id}] ✅ Uploaded and Webhook sent!")
 
-            final_video.close(); bg_clip.close(); qa_clip.close(); audio.close()
+            # 🟢 ล้าง RAM ให้เกลี้ยง
+            final_video.close(); qa_clip.close(); audio.close()
             if show_avatar and os.path.exists(avatar_path): avatar_clip.close()
             for t in timer_clips: t.close()
             if os.path.exists(sfx_path): sfx_clip.close()
@@ -181,7 +178,7 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
         except Exception as e:
             print(f"❌ Native Render Error [{task_id}]: {e}")
         finally:
-            for f in [bg_file, qa_file, output_name]:
+            for f in [qa_file, output_name, audio_file]:
                 try: os.remove(f)
                 except: pass
             gc.collect()
@@ -190,19 +187,18 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
 def api_render_native():
     data = request.json
     task_id = str(uuid.uuid4())
-    bg_url = data.get('bg_image_url')
+    bg_url = data.get('bg_image_url') # รับค่ามาเผื่อไว้กัน n8n พัง แต่เราไม่ได้ใช้โหลดแล้ว
     qa_url = data.get('qa_image_url')
     script = data.get('script', 'ไม่มีสคริปต์')
     countdown_time = int(data.get('countdown_time', 5))
     start_time = float(data.get('start_time', 10.0))
     show_avatar = data.get('show_avatar', False)
 
-    if not bg_url or not qa_url:
-        return jsonify({"error": "Missing image URLs"}), 400
+    if not qa_url:
+        return jsonify({"error": "Missing QA image URL"}), 400
 
     threading.Thread(target=process_native_video, args=(task_id, bg_url, qa_url, script, countdown_time, start_time, show_avatar)).start()
     return jsonify({"status": "processing", "task_id": task_id, "mode": "native"}), 202
 
-# 🟢 อีกจุดที่สำคัญ ต้องมีตัวสั่งรัน Server ครับ
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
