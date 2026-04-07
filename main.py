@@ -1,4 +1,5 @@
 import sys
+# บังคับให้ Python พ่น Log ออกมาทันทีไม่ต้องรอ
 sys.stdout.reconfigure(line_buffering=True)
 
 import os
@@ -43,46 +44,72 @@ render_semaphore = threading.Semaphore(1)
 # ---------------------------------------------------------
 # ☁️ Helper Functions (อัปโหลด, โหลดรูป, ทำเสียง, ทำตัวเลข)
 # ---------------------------------------------------------
-def get_gcs_client():
+def get_gcs_client(task_id):
+    print(f"[{task_id}] ☁️ [GCS] กำลังตรวจสอบสิทธิ์การเข้าถึง Google Cloud...")
     gcs_json_content = os.environ.get("GCS_KEY_JSON")
+    
     if gcs_json_content:
+        print(f"[{task_id}] ☁️ [GCS] พบ GCS_KEY_JSON ใน Environment Variables")
         try:
             info = json.loads(gcs_json_content)
             return storage.Client.from_service_account_info(info)
-        except: return None
+        except Exception as e:
+            print(f"[{task_id}] ❌ [GCS] โหลด credentials พัง: {e}")
+            return None
     elif os.path.exists(KEY_FILE_PATH):
+        print(f"[{task_id}] ☁️ [GCS] พบไฟล์ {KEY_FILE_PATH} ในระบบ")
         return storage.Client.from_service_account_json(KEY_FILE_PATH)
+        
+    print(f"[{task_id}] ❌ [GCS] ไม่พบ Key สำหรับเข้าถึง Google Cloud ทั้งใน ENV และไฟล์!")
     return None
 
-def upload_to_gcs(source_file_name):
+def upload_to_gcs(source_file_name, task_id):
+    print(f"[{task_id}] 🚀 [GCS] กำลังเตรียมอัปโหลดไฟล์ {source_file_name} ขึ้น Bucket: {BUCKET_NAME}")
     try:
-        storage_client = get_gcs_client()
-        if not storage_client: return None
+        storage_client = get_gcs_client(task_id)
+        if not storage_client: 
+            print(f"[{task_id}] ❌ [GCS] เชื่อมต่อ Google Cloud ไม่สำเร็จ ยกเลิกการอัปโหลด")
+            return None
+            
         destination_blob_name = os.path.basename(source_file_name)
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(destination_blob_name)
+        
+        print(f"[{task_id}] 🚀 [GCS] เริ่มยิงข้อมูลขึ้นเซิร์ฟเวอร์ Google...")
         blob.upload_from_filename(source_file_name, timeout=300)
+        print(f"[{task_id}] ✅ [GCS] อัปโหลดไฟล์สำเร็จ! กำลังสร้าง Signed URL...")
+        
         url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12), method="GET")
+        print(f"[{task_id}] 🔗 [GCS] สร้าง URL สำเร็จ: {url[:60]}... (ซ่อนความยาว)")
         return url
     except Exception as e:
-        print(f"❌ Upload Failed: {e}")
+        print(f"[{task_id}] ❌ [GCS] Upload Failed: {e}")
         return None
 
-def download_image_from_url(url, filename):
+def download_image_from_url(url, filename, task_id):
+    print(f"[{task_id}] 📥 [Download] กำลังโหลดรูปจาก: {url}")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, headers=headers, timeout=20)
         if r.status_code == 200:
             with open(filename, 'wb') as f: f.write(r.content)
+            print(f"[{task_id}] ✅ [Download] โหลดรูปลง Server สำเร็จ: {filename} (ขนาด {len(r.content)} bytes)")
             return True
-    except: return False
+        else:
+            print(f"[{task_id}] ❌ [Download] โหลดรูปพัง! Status Code: {r.status_code}")
+            return False
+    except Exception as e:
+        print(f"[{task_id}] ❌ [Download] Error ระหว่างโหลดรูป: {e}")
+        return False
 
-async def create_voice_safe(text, filename):
+async def create_voice_safe(text, filename, task_id):
+    print(f"[{task_id}] 🎙️ [TTS] กำลังสร้างเสียงพากย์ด้วย AI...")
     try:
         communicate = edge_tts.Communicate(text, "th-TH-NiwatNeural", rate="+0%")
         await communicate.save(filename)
+        print(f"[{task_id}] ✅ [TTS] สร้างไฟล์เสียงสำเร็จ: {filename}")
     except Exception as e:
-        print(f"Voice Error: {e}")
+        print(f"[{task_id}] ❌ [TTS] Voice Error: {e}")
 
 def get_font(fontsize):
     font_options = ["tahomabd.ttf", "tahoma.ttf", "Sarabun-Bold.ttf"]
@@ -113,38 +140,47 @@ def create_timer_clip(number, size=(720, 1280)):
 # ---------------------------------------------------------
 def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_time, show_avatar):
     task_id = str(task_id)
-    print(f"[{task_id}] ⏳ Native Render queued (Avatar: {show_avatar})...")
+    print(f"\n=======================================================")
+    print(f"[{task_id}] 🎬 เริ่มกระบวนการ Native Render (Avatar: {show_avatar})")
+    print(f"=======================================================")
     
     with render_semaphore:
+        print(f"[{task_id}] 🚦 เข้าสู่คิวการ Render...")
         output_name = f"final_native_{task_id}.mp4"
         qa_file = f"qa_{task_id}.png"
         audio_file = f"voice_{task_id}.mp3"
         avatar_path = "my_avatar.mp4" 
 
         try:
-            # 🟢 โหลดแค่รูป Q&A ที่เป็นแบบเต็มจอมาแล้ว (ประหยัดเวลาและ RAM)
-            download_image_from_url(qa_url, qa_file)
+            # 1. โหลดรูปภาพ
+            if not download_image_from_url(qa_url, qa_file, task_id):
+                raise Exception(f"หยุดการทำงาน! ไม่สามารถดาวน์โหลดรูปภาพได้")
             
+            # 2. สร้างเสียง
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(create_voice_safe(script, audio_file))
+            loop.run_until_complete(create_voice_safe(script, audio_file, task_id))
             loop.close()
 
             audio = AudioFileClip(audio_file)
             duration = audio.duration
+            print(f"[{task_id}] ⏱️ ความยาววิดีโอรวมจะอยู่ที่: {duration:.2f} วินาที")
             
-            # 🟢 ให้รูป Q&A เป็นเลเยอร์หลัก ขยายเต็มจอ 720x1280 ทันที
+            # 3. เตรียม Layer Q&A
+            print(f"[{task_id}] 🛠️ กำลังจัดการ Layer รูปภาพหลัก...")
             qa_clip = ImageClip(qa_file).set_duration(duration).resize((720, 1280))
-            
             layers = [qa_clip]
 
+            # 4. ใส่ Avatar (ถ้าเลือก)
             if show_avatar and os.path.exists(avatar_path):
-                print(f"[{task_id}] 👤 Applying Green Screen Avatar...")
+                print(f"[{task_id}] 👤 กำลังเจาะฉากเขียว Avatar และจัดวาง...")
                 avatar_clip = VideoFileClip(avatar_path).loop(duration=duration).resize(height=500)
                 avatar_clip = avatar_clip.fx(vfx.mask_color, color=[0, 255, 0], thr=100, s=5)
                 avatar_clip = avatar_clip.set_position(("center", "bottom"))
                 layers.append(avatar_clip)
 
+            # 5. ใส่เวลานับถอยหลัง
+            print(f"[{task_id}] ⏲️ กำลังสร้างตัวเลขนับถอยหลัง {countdown_time} วินาที...")
             timer_clips = []
             for i in range(countdown_time, 0, -1):
                 tc = create_timer_clip(i, size=(720, 1280))
@@ -153,41 +189,52 @@ def process_native_video(task_id, bg_url, qa_url, script, countdown_time, start_
                     timer_clips.append(tc)
             layers.extend(timer_clips)
 
+            # 6. จัดการเสียง
             sfx_path = "sfx_countdown.mp3"
             if os.path.exists(sfx_path):
+                print(f"[{task_id}] 🎵 พบไฟล์ Effect เสียงนับถอยหลัง กำลังนำมารวมร่าง...")
                 sfx_clip = AudioFileClip(sfx_path).subclip(0, min(countdown_time, AudioFileClip(sfx_path).duration)).set_start(start_time).volumex(0.6)
                 final_audio = CompositeAudioClip([audio, sfx_clip])
             else:
                 final_audio = audio
 
-            print(f"[{task_id}] 🎬 Rendering video...")
+            # 7. เรนเดอร์วิดีโอ
+            print(f"[{task_id}] ⚙️ 🎬 กำลังสั่ง MoviePy Render วิดีโอ (อาจใช้เวลาสักครู่)...")
             final_video = CompositeVideoClip(layers).set_audio(final_audio)
             final_video.write_videofile(output_name, fps=24, codec='libx264', preset='ultrafast', logger=None)
+            print(f"[{task_id}] ✅ 🎬 Render วิดีโอเสร็จสมบูรณ์! สร้างไฟล์ {output_name}")
             
-            url = upload_to_gcs(output_name)
+            # 8. อัปโหลดขึ้น Google Cloud
+            url = upload_to_gcs(output_name, task_id)
             if url:
+                print(f"[{task_id}] 🌐 ยิง Webhook กลับไปหา n8n...")
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-                print(f"[{task_id}] ✅ Uploaded and Webhook sent!")
+                print(f"[{task_id}] 🎉🎉 จบงานสมบูรณ์แบบ! 🎉🎉")
+            else:
+                print(f"[{task_id}] ❌ อัปโหลด GCS ไม่สำเร็จ เลยไม่ยิง Webhook กลับไป")
 
-            # 🟢 ล้าง RAM ให้เกลี้ยง
+            # 9. คืนพื้นที่
+            print(f"[{task_id}] 🧹 กำลังล้างไฟล์ชั่วคราวและคืน RAM...")
             final_video.close(); qa_clip.close(); audio.close()
             if show_avatar and os.path.exists(avatar_path): avatar_clip.close()
             for t in timer_clips: t.close()
             if os.path.exists(sfx_path): sfx_clip.close()
 
         except Exception as e:
-            print(f"❌ Native Render Error [{task_id}]: {e}")
+            print(f"[{task_id}] ❌❌ Native Render พังกลางคัน: {e}")
         finally:
             for f in [qa_file, output_name, audio_file]:
                 try: os.remove(f)
                 except: pass
             gc.collect()
+            print(f"[{task_id}] 🏁 ปิด Task เรียบร้อย\n")
 
 @app.route('/render-native', methods=['POST'])
 def api_render_native():
     data = request.json
     task_id = str(uuid.uuid4())
-    bg_url = data.get('bg_image_url') # รับค่ามาเผื่อไว้กัน n8n พัง แต่เราไม่ได้ใช้โหลดแล้ว
+    print(f"\n📨 ได้รับ Request ใหม่จาก n8n: {task_id}")
+    bg_url = data.get('bg_image_url') 
     qa_url = data.get('qa_image_url')
     script = data.get('script', 'ไม่มีสคริปต์')
     countdown_time = int(data.get('countdown_time', 5))
@@ -195,10 +242,12 @@ def api_render_native():
     show_avatar = data.get('show_avatar', False)
 
     if not qa_url:
+        print(f"[{task_id}] ❌ n8n ส่งข้อมูลมาไม่ครบ (ไม่มี qa_image_url) ปฏิเสธการรับงาน!")
         return jsonify({"error": "Missing QA image URL"}), 400
 
     threading.Thread(target=process_native_video, args=(task_id, bg_url, qa_url, script, countdown_time, start_time, show_avatar)).start()
     return jsonify({"status": "processing", "task_id": task_id, "mode": "native"}), 202
 
 if __name__ == '__main__':
+    print("🚀 สตาร์ทเซิร์ฟเวอร์ Python พร้อมรับงานแล้ว!")
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
