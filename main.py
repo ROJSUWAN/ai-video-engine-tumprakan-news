@@ -15,6 +15,14 @@ import numpy as np
 from flask import Flask, request, jsonify
 app = Flask(__name__) 
 
+# 🟢 ท่าไม้ตายแก้บั๊ก ANTIALIAS สำหรับ MoviePy
+import PIL.Image
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
+
+from moviepy.editor import *
+import moviepy.video.fx.all as vfx
+
 # AI & Media Libs
 from moviepy.editor import *
 import moviepy.video.fx.all as vfx
