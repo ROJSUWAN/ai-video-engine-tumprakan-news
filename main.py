@@ -15,8 +15,9 @@ import numpy as np
 from flask import Flask, request, jsonify
 app = Flask(__name__) 
 
-# 🟢 ท่าไม้ตายแก้บั๊ก ANTIALIAS สำหรับ MoviePy
+# 🟢 ท่าไม้ตายแก้บั๊ก ANTIALIAS และเครื่องมือทำภาพเบลอ
 import PIL.Image
+from PIL import ImageFilter, ImageEnhance # <-- นำเข้าเครื่องมือเบลอและปรับแสง
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
 
@@ -136,7 +137,6 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script
             loop.run_until_complete(create_voice_safe(script_qa, f_qa_aud, task_id))
             loop.run_until_complete(create_voice_safe(script_ans, f_ans_aud, task_id))
             
-            # ถ้ามีโฆษณา และมีสคริปต์โฆษณา ให้ทำเสียงพากย์โฆษณาด้วย
             has_ad_audio = False
             if has_ad and loop.run_until_complete(create_voice_safe(script_ad, f_ad_aud, task_id)):
                 has_ad_audio = True
@@ -170,11 +170,48 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script
                 avatar_clip = avatar_clip.set_position(("center", "bottom"))
                 main_video = CompositeVideoClip([main_video, avatar_clip])
 
-            # 🎬 SCENE 4: โฆษณา
-            ad_aud_clip = None # 🟢 สร้างตัวแปรลอยๆ ไว้ก่อน เพื่อให้เคลียร์ RAM ได้ถูกต้องตอนจบ
+            # 🎬 SCENE 4: โฆษณา (พร้อมเอฟเฟกต์ภาพเบลอพื้นหลัง)
+            ad_aud_clip = None 
             if has_ad:
-                print(f"[{task_id}] 📢 ต่อท้าย Scene โฆษณา...")
-                scene4 = ImageClip(f_ad_img).resize((720, 1280))
+                print(f"[{task_id}] 📢 ต่อท้าย Scene โฆษณา (สร้างพื้นหลังเบลอ)...")
+                
+                # --- 1. สร้างพื้นหลังเบลอจากรูปต้นฉบับ ---
+                raw_img = PIL.Image.open(f_ad_img).convert("RGB")
+                img_w, img_h = raw_img.size
+                target_ratio = 720 / 1280
+                
+                # ขยายรูปให้เต็มจอ 720x1280
+                if img_w / img_h > target_ratio:
+                    new_h = 1280
+                    new_w = int(new_h * (img_w / img_h))
+                else:
+                    new_w = 720
+                    new_h = int(new_w / (img_w / img_h))
+                    
+                bg_img = raw_img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
+                
+                # ตัดส่วนเกินออกให้เหลือ 720x1280 เป๊ะๆ
+                left = (new_w - 720) / 2
+                top = (new_h - 1280) / 2
+                bg_img = bg_img.crop((left, top, left + 720, top + 1280))
+                
+                # เบลอภาพ 25 ระดับ และลดแสงลง 50% ให้ตัวโฆษณาหลักเด่น
+                bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=25))
+                bg_img = ImageEnhance.Brightness(bg_img).enhance(0.5)
+                
+                ad_bg_clip = ImageClip(np.array(bg_img))
+                
+                # --- 2. จัดการรูปโฆษณาหลัก (คงสัดส่วนเดิมเป๊ะ ไม่บิดเบี้ยว) ---
+                ad_main_clip = ImageClip(f_ad_img)
+                m_w, m_h = ad_main_clip.size
+                if m_w / m_h > 720 / 1280:
+                    ad_main_clip = ad_main_clip.resize(width=720)
+                else:
+                    ad_main_clip = ad_main_clip.resize(height=1280)
+                    
+                # --- 3. ประกอบฉาก 4 ---
+                scene4 = CompositeVideoClip([ad_bg_clip, ad_main_clip.set_position("center")])
+                
                 if has_ad_audio:
                     ad_aud_clip = AudioFileClip(f_ad_aud)
                     scene4 = scene4.set_duration(ad_aud_clip.duration).set_audio(ad_aud_clip)
@@ -195,12 +232,12 @@ def process_native_video(task_id, qa_url, ans_url, ad_img_url, script_qa, script
                 requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
                 print(f"[{task_id}] 🎉 สร้างคลิปสมบูรณ์ ยิง Webhook แล้ว!")
 
-            # 🧹 คืน RAM (ปิดไฟล์เสียงทั้งหมด หลังจากเรนเดอร์เสร็จแล้วเท่านั้น!)
+            # 🧹 คืน RAM
             final_video.close()
             main_video.close()
             qa_aud_clip.close()
             ans_aud_clip.close()
-            if ad_aud_clip: ad_aud_clip.close() # 🟢 ปิดไฟล์เสียงโฆษณาตรงนี้ ปลอดภัย 100%
+            if ad_aud_clip: ad_aud_clip.close() 
 
         except Exception as e:
             print(f"[{task_id}] ❌❌ Render พังกลางคัน: {e}")
