@@ -42,8 +42,8 @@ async def generate_voice(text, filename, use_premium, task_id):
     # 🔵 ชั้นที่ 1: ElevenLabs
     if use_premium and ELEVEN_API_KEY:
         try:
-            print(f"[{task_id}] 🎙️ ElevenLabs กำลังพากย์ไทย (Multilingual v2)...")
-            voice_id = "VCgLBmBjldJmfphyB8sZ" # 🟢 อัปเดต Voice ID ของพี่ตั้มแล้ว!
+            print(f"[{task_id}] 🎙️ ElevenLabs กำลังพากย์ไทย (Turbo v2.5)...")
+            voice_id = "VCgLBmBjldJmfphyB8sZ" # 🟢 Voice ID ของพี่ตั้ม
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             
             headers = {
@@ -53,10 +53,10 @@ async def generate_voice(text, filename, use_premium, task_id):
             
             payload = {
                 "text": str(text),
-                "model_id": "eleven_multilingual_v2", # บังคับ v2 เพื่อให้พูดไทยชัด
+                "model_id": "eleven_turbo_v2_5", # 🟢 อัปเกรดเป็น Turbo v2.5 พูดไทยชัดกว่า v2
                 "voice_settings": {
-                    "stability": 0.75,        # ล็อกเสียงให้นิ่ง
-                    "similarity_boost": 0.8,
+                    "stability": 0.50,        # 🟢 ลดลงมาให้เสียงธรรมชาติ ไม่ฝืน
+                    "similarity_boost": 0.60, # 🟢 ลดจาก 0.8 ป้องกันเสียงเพี้ยนติดสำเนียงฝรั่ง
                     "style": 0.0,
                     "use_speaker_boost": True
                 }
@@ -74,7 +74,7 @@ async def generate_voice(text, filename, use_premium, task_id):
 
     # 🔴 ชั้นที่ 2: Edge-TTS (Fallback สำรอง)
     try:
-        print(f"[{task_id}] 🎙️ ใช้ Edge-TTS (สำรอง)...")
+        print(f"[{task_id}] 🎙️ ใช้ Edge-TTS (สำรอง Niwat)...")
         await edge_tts.Communicate(str(text), "th-TH-NiwatNeural").save(filename)
         return True
     except Exception as e:
