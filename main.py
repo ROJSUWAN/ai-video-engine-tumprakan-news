@@ -56,7 +56,7 @@ async def generate_voice(text, filename, use_premium, task_id):
             
             payload = {
                 "text": str(text),
-                "model_id": "eleven_turbo_v2_5", # ใช้ Turbo v2.5 พูดไทยชัดและเร็วกว่า
+                "model_id": "Eleven v3", # ใช้ Turbo v2.5 พูดไทยชัดและเร็วกว่า
                 "voice_settings": {
                     "stability": 0.50,        # ล็อกเสียงให้นิ่งเป็นธรรมชาติ
                     "similarity_boost": 0.60, # ลดลงนิดหน่อยให้ไม่ติดสำเนียงหุ่นยนต์
