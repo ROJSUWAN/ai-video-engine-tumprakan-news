@@ -43,7 +43,10 @@ async def generate_voice(text, filename, use_premium, task_id):
     if use_premium and ELEVEN_API_KEY:
         try:
             print(f"[{task_id}] 🎙️ ElevenLabs กำลังพากย์ไทย (Turbo v2.5)...")
-            voice_id = "VCgLBmBjldJmfphyB8sZ" # 🟢 Voice ID ของพี่ตั้ม
+            
+            # 🟢 อัปเดต Voice ID ใหม่ของพี่ตั้ม (เสียงไทยแท้) 🟢
+            voice_id = "Ys4n4Rt7rqWHwWMwezP3" 
+            
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             
             headers = {
@@ -53,10 +56,10 @@ async def generate_voice(text, filename, use_premium, task_id):
             
             payload = {
                 "text": str(text),
-                "model_id": "eleven_turbo_v2_5", # 🟢 อัปเกรดเป็น Turbo v2.5 พูดไทยชัดกว่า v2
+                "model_id": "eleven_turbo_v2_5", # ใช้ Turbo v2.5 พูดไทยชัดและเร็วกว่า
                 "voice_settings": {
-                    "stability": 0.50,        # 🟢 ลดลงมาให้เสียงธรรมชาติ ไม่ฝืน
-                    "similarity_boost": 0.60, # 🟢 ลดจาก 0.8 ป้องกันเสียงเพี้ยนติดสำเนียงฝรั่ง
+                    "stability": 0.50,        # ล็อกเสียงให้นิ่งเป็นธรรมชาติ
+                    "similarity_boost": 0.60, # ลดลงนิดหน่อยให้ไม่ติดสำเนียงหุ่นยนต์
                     "style": 0.0,
                     "use_speaker_boost": True
                 }
@@ -72,7 +75,7 @@ async def generate_voice(text, filename, use_premium, task_id):
         except Exception as e:
             print(f"[{task_id}] ⚠️ ElevenLabs Error: {e} -> สลับไปใช้สำรอง")
 
-    # 🔴 ชั้นที่ 2: Edge-TTS (Fallback สำรอง)
+    # 🔴 ชั้นที่ 2: Edge-TTS (Fallback สำรองเผื่อ ElevenLabs ล่ม)
     try:
         print(f"[{task_id}] 🎙️ ใช้ Edge-TTS (สำรอง Niwat)...")
         await edge_tts.Communicate(str(text), "th-TH-NiwatNeural").save(filename)
@@ -179,8 +182,8 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
             blob = client.bucket(BUCKET_NAME).blob(output_name); blob.upload_from_filename(output_name)
             url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12))
             
-            # 🟢 เช็คว่าใช้พรีเมียมจริงไหม จะได้ส่ง Log ถูกต้อง
-            voice_used = "ElevenLabs" if use_premium and ELEVEN_API_KEY else "Edge-TTS"
+            # 🟢 ส่ง Log กลับไป n8n
+            voice_used = "ElevenLabs (Tum Thai Voice)" if use_premium and ELEVEN_API_KEY else "Edge-TTS"
             requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success', 'voice_used': voice_used}, timeout=20)
             print(f"[{task_id}] 🎉 ภารกิจสำเร็จ (พากย์ด้วย: {voice_used})!\n")
 
@@ -195,7 +198,6 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
 @app.route('/render-native', methods=['POST'])
 def api_render():
     d = request.json; task_id = str(uuid.uuid4())
-    # รองรับการส่งค่ามาจาก n8n ทั้งชื่อเก่าและชื่อใหม่
     use_p = d.get('use_premium_voice') or d.get('use_elevenlabs', False)
     threading.Thread(target=process_master_video, args=(
         task_id, d.get('qa_image_url'), d.get('ans_image_url'), d.get('ad_image_url'),
