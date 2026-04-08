@@ -23,7 +23,7 @@ from moviepy.editor import *
 from moviepy.audio.fx.all import audio_loop
 import moviepy.video.fx.all as vfx
 import edge_tts
-from google.cloud import storage, texttospeech
+from google.cloud import storage
 import datetime
 
 nest_asyncio.apply()
@@ -31,50 +31,54 @@ nest_asyncio.apply()
 # 🔗 Configuration
 N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
-GCS_KEY_JSON = os.environ.get("GCS_KEY_JSON") 
+GCS_KEY_JSON = os.environ.get("GCS_KEY_JSON")      # สำหรับอัปโหลดวิดีโอขึ้น Cloud
+ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY")  # สำหรับพากย์เสียงพรีเมียม
 render_semaphore = threading.Semaphore(1) 
 
-# 🎙️ ระบบเสียงพากย์ Google Cloud TTS (ใช้ Standard-A แต่ใส่ SSML ตื่นเต้น)
+# 🎙️ ระบบเสียงพากย์ ElevenLabs (Premium Thai) + Edge-TTS (Fallback)
 async def generate_voice(text, filename, use_premium, task_id):
     if not text or str(text).strip() == "": return False
     
-    if use_premium and GCS_KEY_JSON:
+    # 🔵 ชั้นที่ 1: ElevenLabs
+    if use_premium and ELEVEN_API_KEY:
         try:
-            print(f"[{task_id}] 🎙️ Google TTS (Standard-A) - โหมดตื่นเต้นกำลังทำงาน...")
-            client = texttospeech.TextToSpeechClient.from_service_account_info(json.loads(GCS_KEY_JSON))
+            print(f"[{task_id}] 🎙️ ElevenLabs กำลังพากย์ไทย (Multilingual v2)...")
+            voice_id = "VCgLBmBjldJmfphyB8sZ" # 🟢 อัปเดต Voice ID ของพี่ตั้มแล้ว!
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             
-            # 🟢 ใช้ SSML เพื่อบังคับให้เสียง Standard ดูตื่นเต้น
-            ssml_text = f"""
-            <speak>
-              <prosody rate="1.1" pitch="+4st">
-                {str(text)}
-              </prosody>
-            </speak>
-            """
-            synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
+            headers = {
+                "xi-api-key": ELEVEN_API_KEY, 
+                "Content-Type": "application/json"
+            }
             
-            # ใช้ th-TH-Standard-A (ตัวนี้มีชัวร์ 1,000,000% ทุกโปรเจกต์)
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="th-TH",
-                name="th-TH-Standard-A" 
-            )
+            payload = {
+                "text": str(text),
+                "model_id": "eleven_multilingual_v2", # บังคับ v2 เพื่อให้พูดไทยชัด
+                "voice_settings": {
+                    "stability": 0.75,        # ล็อกเสียงให้นิ่ง
+                    "similarity_boost": 0.8,
+                    "style": 0.0,
+                    "use_speaker_boost": True
+                }
+            }
             
-            audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
-            
-            response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-            with open(filename, "wb") as out:
-                out.write(response.audio_content)
-            return True
+            r = requests.post(url, json=payload, headers=headers)
+            if r.status_code == 200:
+                with open(filename, "wb") as out:
+                    out.write(r.content)
+                return True
+            else:
+                print(f"[{task_id}] ⚠️ ElevenLabs Fail ({r.status_code}): {r.text} -> สลับไปใช้สำรอง")
         except Exception as e:
-            print(f"⚠️ Google TTS Fail: {e} -> สลับไปใช้สำรอง Edge-TTS")
+            print(f"[{task_id}] ⚠️ ElevenLabs Error: {e} -> สลับไปใช้สำรอง")
 
-    # 🔴 Fallback ชั้นสุดท้าย
+    # 🔴 ชั้นที่ 2: Edge-TTS (Fallback สำรอง)
     try:
         print(f"[{task_id}] 🎙️ ใช้ Edge-TTS (สำรอง)...")
         await edge_tts.Communicate(str(text), "th-TH-NiwatNeural").save(filename)
         return True
     except Exception as e:
-        print(f"❌ Critical Error: {e}")
+        print(f"[{task_id}] ❌ Critical Error: {e}")
         return False
 
 # 🛠️ ระบบจัดการ Avatar (Stable Frame Method)
@@ -97,17 +101,19 @@ def get_avatar_clip_stable(video_path, task_id, target_duration):
 # 🎞️ MASTER RENDER ENGINE
 def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, script_ans, script_ad, countdown, use_premium, show_avatar):
     task_id = str(task_id); output_name = f"final_{task_id}.mp4"
-    print(f"[{task_id}] เริ่มงานเรนเดอร์ (โหมด Excited Standard)")
+    print(f"\n[{task_id}] ================= เริ่มงานเรนเดอร์ =================")
 
     with render_semaphore:
         try:
             # 1. Download Resources
             def dl(u, f):
                 if not u or str(u).lower() == "none" or str(u).strip() == "": return False
-                r = requests.get(u, timeout=60)
-                if r.status_code == 200:
-                    with open(f, 'wb') as file: file.write(r.content)
-                    return True
+                try:
+                    r = requests.get(u, timeout=60)
+                    if r.status_code == 200:
+                        with open(f, 'wb') as file: file.write(r.content)
+                        return True
+                except: return False
                 return False
 
             dl(qa_url, f"qa_{task_id}.png"); dl(ans_url, f"ans_{task_id}.png")
@@ -165,17 +171,22 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
                 bgm = audio_loop(AudioFileClip("bgm_main.mp3").volumex(0.12), duration=final_v.duration)
                 final_v = final_v.set_audio(CompositeAudioClip([final_v.audio, bgm]))
 
+            # ⚙️ Render
             final_v.write_videofile(output_name, fps=24, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
             
+            # ☁️ Upload to GCS
             client = storage.Client.from_service_account_info(json.loads(GCS_KEY_JSON))
             blob = client.bucket(BUCKET_NAME).blob(output_name); blob.upload_from_filename(output_name)
             url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12))
             
-            requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success'}, timeout=20)
-            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ (ด้วยเสียง Standard-A ตื่นเต้น)!")
+            # 🟢 เช็คว่าใช้พรีเมียมจริงไหม จะได้ส่ง Log ถูกต้อง
+            voice_used = "ElevenLabs" if use_premium and ELEVEN_API_KEY else "Edge-TTS"
+            requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success', 'voice_used': voice_used}, timeout=20)
+            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ (พากย์ด้วย: {voice_used})!\n")
 
-        except Exception as e: print(f"❌ Error: {e}")
+        except Exception as e: print(f"[{task_id}] ❌ Error: {e}")
         finally:
+            # Cleanup
             for f in [f"qa_{task_id}.png", f"ans_{task_id}.png", f"ad_{task_id}.png", f"v_qa_{task_id}.mp3", f"v_ans_{task_id}.mp3", f"v_ad_{task_id}.mp3", f"av_{task_id}.mp4", output_name]:
                 if os.path.exists(f): os.remove(f)
             if os.path.exists(f"frames_{task_id}"): shutil.rmtree(f"frames_{task_id}")
@@ -184,6 +195,7 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
 @app.route('/render-native', methods=['POST'])
 def api_render():
     d = request.json; task_id = str(uuid.uuid4())
+    # รองรับการส่งค่ามาจาก n8n ทั้งชื่อเก่าและชื่อใหม่
     use_p = d.get('use_premium_voice') or d.get('use_elevenlabs', False)
     threading.Thread(target=process_master_video, args=(
         task_id, d.get('qa_image_url'), d.get('ans_image_url'), d.get('ad_image_url'),
