@@ -102,9 +102,10 @@ def get_avatar_clip_stable(video_path, task_id, target_duration):
     except: return None
 
 # 🎞️ MASTER RENDER ENGINE
-def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, script_ans, script_ad, countdown, use_premium, show_avatar):
+# 🟢 เพิ่ม job_id มารับค่าจาก n8n
+def process_master_video(task_id, job_id, qa_url, ans_url, ad_url, av_url, script_qa, script_ans, script_ad, countdown, use_premium, show_avatar):
     task_id = str(task_id); output_name = f"final_{task_id}.mp4"
-    print(f"\n[{task_id}] ================= เริ่มงานเรนเดอร์ =================")
+    print(f"\n[{task_id}] ================= เริ่มงานเรนเดอร์ (Job ID: {job_id}) =================")
 
     with render_semaphore:
         try:
@@ -182,10 +183,18 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
             blob = client.bucket(BUCKET_NAME).blob(output_name); blob.upload_from_filename(output_name)
             url = blob.generate_signed_url(version="v4", expiration=datetime.timedelta(hours=12))
             
-            # 🟢 ส่ง Log กลับไป n8n
+            # 🟢 ส่ง Log กลับไป n8n (เพิ่ม job_id และเปลี่ยน key เป็น video_url)
             voice_used = "ElevenLabs (Tum Thai Voice)" if use_premium and ELEVEN_API_KEY else "Edge-TTS"
-            requests.post(N8N_WEBHOOK_URL, json={'id': task_id, 'final_url': url, 'status': 'success', 'voice_used': voice_used}, timeout=20)
-            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ (พากย์ด้วย: {voice_used})!\n")
+            
+            webhook_payload = {
+                'job_id': job_id,           # ส่ง ID ที่ได้จาก DB กลับไปให้ n8n อัปเดตข้อมูล
+                'video_url': url,           # เปลี่ยนเป็น video_url ให้ตรงกับ Flow 2
+                'status': 'success', 
+                'voice_used': voice_used
+            }
+            
+            requests.post(N8N_WEBHOOK_URL, json=webhook_payload, timeout=20)
+            print(f"[{task_id}] 🎉 ภารกิจสำเร็จ ส่ง Webhook กลับ n8n เรียบร้อย (พากย์ด้วย: {voice_used})!\n")
 
         except Exception as e: print(f"[{task_id}] ❌ Error: {e}")
         finally:
@@ -197,14 +206,20 @@ def process_master_video(task_id, qa_url, ans_url, ad_url, av_url, script_qa, sc
 
 @app.route('/render-native', methods=['POST'])
 def api_render():
-    d = request.json; task_id = str(uuid.uuid4())
+    d = request.json
+    task_id = str(uuid.uuid4())
+    job_id = d.get('job_id') # 🟢 ดึง job_id จาก n8n
+    
     use_p = d.get('use_premium_voice') or d.get('use_elevenlabs', False)
+    
+    # 🟢 ส่ง job_id เข้าไปใน Thread ของกระบวนการทำวิดีโอด้วย
     threading.Thread(target=process_master_video, args=(
-        task_id, d.get('qa_image_url'), d.get('ans_image_url'), d.get('ad_image_url'),
+        task_id, job_id, d.get('qa_image_url'), d.get('ans_image_url'), d.get('ad_image_url'),
         d.get('avatar_video_url'), d.get('script_qa'), d.get('script_ans'), d.get('script_ad'),
         int(d.get('countdown_time', 5)), use_p, d.get('show_avatar', False)
     )).start()
-    return jsonify({"status": "processing", "task_id": task_id}), 202
+    
+    return jsonify({"status": "processing", "task_id": task_id, "job_id": job_id}), 202
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
