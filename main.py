@@ -29,7 +29,7 @@ import datetime
 nest_asyncio.apply()
 
 # 🔗 Configuration
-N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/video-completed" 
+N8N_WEBHOOK_URL = "https://primary-production-f87f.up.railway.app/webhook/tumprakan-video-done" 
 BUCKET_NAME = "n8n-video-tumprakan-news" 
 GCS_KEY_JSON = os.environ.get("GCS_KEY_JSON")      # สำหรับอัปโหลดวิดีโอขึ้น Cloud
 ELEVEN_API_KEY = os.environ.get("ELEVEN_API_KEY")  # สำหรับพากย์เสียงพรีเมียม
